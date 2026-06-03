@@ -30,3 +30,8 @@ Thumbs.db
 # Node modules (if any)
 node_modules/
 nul
+
+# Benchmark build output + transient runs (keep fixtures.json, baseline.json, scripts)
+bench/engine/
+bench/runs/
+c++engine/wasm_node/
