@@ -173,16 +173,17 @@ int alphaBeta(
     }
 
     uint64_t hash = board.getHash();
+    const int alphaOrig = alpha;  // window we were given -- flag the stored entry against THIS
 
-    // Transposition table lookup
+    // Transposition table lookup (textbook pattern). Narrow the window from a stored
+    // bound for cutoffs, but the entry's flag below is computed from alphaOrig, not the
+    // mutated alpha -- that mutated-flag was the order-dependence bug (off-by-one).
     TTEntry ttEntry;
-    bool ttValid = false;  // Track if TT entry is usable for move ordering
+    bool ttHit = false;  // an entry exists at all -> its bestMove is safe for ordering
 
     if (tt.probe(hash, ttEntry)) {
+        ttHit = true;
         if (ttEntry.depth >= depth) {
-            // Entry is from sufficient depth - can be used for both score and move ordering
-            ttValid = true;
-
             if (ttEntry.flag == TTEntry::EXACT) {
                 return ttEntry.score;
             } else if (ttEntry.flag == TTEntry::LOWER_BOUND) {
@@ -190,13 +191,10 @@ int alphaBeta(
             } else if (ttEntry.flag == TTEntry::UPPER_BOUND) {
                 beta = std::min(beta, ttEntry.score);
             }
-
             if (alpha >= beta) {
                 return ttEntry.score;
             }
         }
-        // If ttEntry.depth < depth, entry is from shallow search - don't use it!
-        // Using shallow entries for move ordering causes wrong scores at deeper depths
     }
 
     // Get and order moves
@@ -207,18 +205,12 @@ int alphaBeta(
         return evaluate(board);
     }
 
-    // Only use the TT entry for move ordering if it's from sufficient depth.
-    // CONFIRMED (not just theory): passing shallow entries to orderMoves yields WRONG
-    // scores on large searches -- e.g. an 11-empty all-unique position reports its
-    // margin off by 1 (59 vs the true 58). There is a latent alpha-beta/TT bug where
-    // move order leaks into the stored/returned score; until that root cause is fixed,
-    // shallow-entry ordering is unsafe. (Recovering this pruning is worth ~2.5x fewer
-    // nodes on big positions -- revisit after fixing the underlying TT bug.)
-    orderMoves(moves, ttValid ? &ttEntry : nullptr, killers, history, ply);
+    // Order moves: try the TT's remembered best move first whenever any entry exists.
+    // Safe now that the entry flag is computed against alphaOrig (below).
+    orderMoves(moves, ttHit ? &ttEntry : nullptr, killers, history, ply);
 
     int bestScore = -INF;
     Move bestMove = moves[0];
-    TTEntry::Flag flag = TTEntry::UPPER_BOUND;
 
     // Search all moves
     for (const auto& move : moves) {
@@ -230,21 +222,24 @@ int alphaBeta(
         if (score > bestScore) {
             bestScore = score;
             bestMove = move;
-
-            if (score > alpha) {
-                alpha = score;
-                flag = TTEntry::EXACT;
-            }
+            if (score > alpha) alpha = score;  // raise the search window
         }
 
-        // Beta cutoff - update killers and history
+        // Beta cutoff
         if (alpha >= beta) {
-            flag = TTEntry::LOWER_BOUND;
             killers.update(ply, bestMove);  // Store killer move
             history.update(bestMove, depth);  // Update history
             break;
         }
     }
+
+    // Flag the stored entry against the ORIGINAL window (not the mutated alpha):
+    //   bestScore <= alphaOrig -> never beat alpha   -> UPPER_BOUND
+    //   bestScore >= beta      -> caused a cutoff     -> LOWER_BOUND
+    //   otherwise              -> exact within window -> EXACT
+    TTEntry::Flag flag = (bestScore <= alphaOrig) ? TTEntry::UPPER_BOUND
+                       : (bestScore >= beta)      ? TTEntry::LOWER_BOUND
+                       : TTEntry::EXACT;
 
     // Store in transposition table
     tt.store(hash, TTEntry(bestScore, depth, flag, bestMove));
