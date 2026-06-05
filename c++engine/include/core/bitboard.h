@@ -47,7 +47,8 @@ public:
     int getScore(int player) const;
 
     // Move operations
-    std::vector<Move> getValidMoves() const;
+    std::vector<Move> getValidMoves() const;            // convenience: allocates + returns
+    void getValidMovesInto(std::vector<Move>& out) const;  // hot path: clears + refills, no alloc after warmup
     bool isValidMove(const Move& move) const;
     void makeMove(const Move& move);
     void unmakeMove(const Move& move);  // Undo move (for minimax)

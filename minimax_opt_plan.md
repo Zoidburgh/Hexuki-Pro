@@ -56,14 +56,21 @@ overhead), so "under 1 min" should be stated for a target environment.
 - [x] **Node counter `int` → `long long`.** The `int nodesSearched` wrapped past
       INT_MAX on billion-node searches (12-empty showed −1.36B). Cosmetic (never
       affected the score), but the editor's node readout was garbage on 12+. Fixed.
-- [ ] **Tiles: `std::vector<int>` → count array `int[10]`.** O(1) make/unmake (no
-      find/erase/alloc), faster move-gen dedup, smaller MCTS per-sim copy. *Still TODO.*
-- **Measured (Node, array TT):**
-  - 11-empty: **8.5s** (was ~12s), **5.0M nps** (was ~3.25M), 42.8M nodes — **~30% faster**.
-  - 12-empty: **completes, no OOM** (~2.93B nodes, ~420s). Previously `Aborted()` /
-    OOM. *This was the critical fix — billion-node searches no longer crash.*
-- **Risk:** low. Eviction is safe now that the bound-flag bug is fixed — the gate's
-  consistency check guards it. Gate: **PASS** (root wasm byte-identical to gate binary).
+- [x] **No-alloc move generation.** `getValidMoves()` allocated a fresh `std::vector<Move>`
+      (plus a dedup temp) at *every node* — ~billions of malloc/free per deep search.
+      Added `getValidMovesInto(buf)` that refills a **per-ply reusable buffer** (the dedup
+      temp is now a stack array). Behaviour is identical (same move order -> same node
+      counts/values); only the per-node heap churn is gone. **DONE.**
+- [ ] **Tiles: `std::vector<int>` → count array `int[10]`.** O(1) make/unmake. The big
+      per-node alloc is already gone (above); this is now a smaller win — *deferred.*
+- **Measured (Node):**
+  - 11-empty: ~12s (orig) -> **8.5s** (array TT) -> **6.2s** (no-alloc buffer). nps
+    3.25M -> 5.0M -> **6.9M**. 42.8M nodes (identical throughout — exact same search).
+    **~2× off the original.**
+  - 12-empty: **completes, no OOM** (~2.93B nodes). Previously `Aborted()` / OOM —
+    the critical fix; billion-node searches no longer crash.
+- **Risk:** low. Move order/node counts are byte-identical, so the search is provably
+  unchanged. Gate: **PASS** (root wasm byte-identical to gate binary).
 
 ### Phase 2 — Fewer nodes / search smarter (sound) — target ~1.5–2.5×
 - [ ] **Principal Variation Search (null-window).** Search move 1 full-window, the rest
@@ -105,8 +112,9 @@ overhead), so "under 1 min" should be stated for a target environment.
 |---|---|---|---|---|---|
 | baseline | ordering fix | _(measure in P0)_ | ~3.25M | PASS | `29ac9ae` |
 | 0 | size it | 12e ~420s; 13e not yet | ~3.25M | PASS | — |
-| 1a | TT array (OOM fix) | 12e completes (no OOM) | ~5.0M (11e) | PASS | _this_ |
-| 1b | count tiles | | | | TODO |
+| 1a | TT array (OOM fix) | 12e completes (no OOM) | ~5.0M (11e) | PASS | `dedfa8f` |
+| 1b | no-alloc move buffer | 11e 8.5s -> 6.2s | ~6.9M (11e) | PASS | _this_ |
+| 1c | count-array tiles | _(deferred — small win)_ | | | TODO |
 | 2 | PVS + aspiration + ordering | | | | |
 | 4 | threads (Lazy SMP) | | | | |
 

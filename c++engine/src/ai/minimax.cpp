@@ -12,6 +12,15 @@ constexpr int INF = 1000000;
 constexpr int MATE_SCORE = 900000;
 constexpr int TIMEOUT_CHECK_INTERVAL = 1000;  // Check time every 1000 nodes
 
+// Per-ply reusable move buffers. The search is single-threaded DFS, so at any instant
+// only one node per ply is live -- node at ply p iterates s_moveStack[p] while its
+// children use s_moveStack[p+1], so [p] is never disturbed mid-iteration. Reusing one
+// vector per ply means getValidMovesInto() allocates only on the first node at each
+// depth, then just refills -- killing the ~per-node heap allocation on deep searches.
+// thread_local => each future Lazy-SMP worker gets its own set (no sharing/races).
+constexpr int MOVE_STACK_SIZE = 64;  // > any reachable ply (<= empties <= 19)
+static thread_local std::vector<Move> s_moveStack[MOVE_STACK_SIZE];
+
 // ============================================================================
 // Transposition Table Implementation
 // ============================================================================
@@ -196,8 +205,12 @@ int alphaBeta(
         }
     }
 
-    // Get and order moves
-    std::vector<Move> moves = board.getValidMoves();
+    // Get and order moves. Fill a per-ply reusable buffer instead of allocating a fresh
+    // vector at every node (ply is bounded by empties <= 19 < MOVE_STACK_SIZE; the
+    // local fallback never triggers in practice but keeps us safe if it ever did).
+    std::vector<Move> moveFallback;
+    std::vector<Move>& moves = (ply < MOVE_STACK_SIZE) ? s_moveStack[ply] : moveFallback;
+    board.getValidMovesInto(moves);
 
     if (moves.empty()) {
         // No moves available - game over

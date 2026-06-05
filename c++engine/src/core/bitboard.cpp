@@ -489,24 +489,25 @@ void HexukiBitboard::ensureLegalTable() {
     g_legalTableBuilt = true;
 }
 
-std::vector<Move> HexukiBitboard::getValidMoves() const {
+// Hot-path move generation: fill the caller's buffer instead of returning a fresh
+// vector. The search reuses one buffer per ply, so after warmup this allocates NOTHING
+// (clear() keeps capacity). Behaviour is identical to the old getValidMoves() -- same
+// move order, same set -- so node counts and values are unchanged; only the ~per-node
+// heap churn (the returned vector + the dedup temp) is gone.
+void HexukiBitboard::getValidMovesInto(std::vector<Move>& moves) const {
     ensureLegalTable();  // no-op after the first build
-    std::vector<Move> moves;
+    moves.clear();       // keeps capacity -> no realloc on repeat calls
 
-    // OPTIMIZATION: Use const reference to avoid copying the tiles vector
     const std::vector<int>& availableTiles = (currentPlayer == PLAYER_1) ? p1AvailableTiles : p2AvailableTiles;
 
-    // Get unique tile values (handle duplicates like [1,1,1,1,1,1,1,1,1])
-    // If tiles = [1,1,1], we only want to try placing "1" once, not three times
-    // OPTIMIZATION: Reserve capacity to avoid reallocations
-    std::vector<int> uniqueTileValues;
-    uniqueTileValues.reserve(9);  // Max 9 unique tiles
-
-    // Manual deduplication (faster than copy+sort+unique for small vectors)
+    // Unique tile values (e.g. [1,1,1] -> place "1" once) on a STACK array -- no heap.
+    // At most 9 distinct values (tiles are 1..9), so 16 is a safe fixed bound.
+    int uniqueTileValues[16];
+    int uniqueCount = 0;
     for (int tile : availableTiles) {
-        if (std::find(uniqueTileValues.begin(), uniqueTileValues.end(), tile) == uniqueTileValues.end()) {
-            uniqueTileValues.push_back(tile);
-        }
+        bool seen = false;
+        for (int i = 0; i < uniqueCount; i++) { if (uniqueTileValues[i] == tile) { seen = true; break; } }
+        if (!seen && uniqueCount < 16) uniqueTileValues[uniqueCount++] = tile;
     }
 
     // Anti-symmetry: only relevant when both players hold identical tiles AND the
@@ -522,13 +523,19 @@ std::vector<Move> HexukiBitboard::getValidMoves() const {
         if (!(legal & (1u << hexId))) continue;   // table: not a legal location
 
         // Try each unique tile value (avoids generating duplicate moves)
-        for (int tileValue : uniqueTileValues) {
+        for (int u = 0; u < uniqueCount; u++) {
+            const int tileValue = uniqueTileValues[u];
             // Reject a move that would make the board a perfect mirror
             if (checkSymmetry && wouldBeMirrored(hexId, tileValue)) continue;
             moves.push_back(Move(hexId, tileValue));
         }
     }
+}
 
+// Convenience wrapper for non-hot callers (MCTS, UI, wasm interface): allocate + return.
+std::vector<Move> HexukiBitboard::getValidMoves() const {
+    std::vector<Move> moves;
+    getValidMovesInto(moves);
     return moves;
 }
 
