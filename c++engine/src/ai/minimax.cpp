@@ -176,11 +176,9 @@ int alphaBeta(
 
     // Transposition table lookup
     TTEntry ttEntry;
-    bool ttValid = false;  // entry deep enough to trust its SCORE (cutoffs/bounds)
-    bool ttHit = false;    // entry exists at all -> safe to use its bestMove for ORDERING
+    bool ttValid = false;  // Track if TT entry is usable for move ordering
 
     if (tt.probe(hash, ttEntry)) {
-        ttHit = true;
         if (ttEntry.depth >= depth) {
             // Entry is from sufficient depth - can be used for both score and move ordering
             ttValid = true;
@@ -209,11 +207,14 @@ int alphaBeta(
         return evaluate(board);
     }
 
-    // Use the TT's bestMove to ORDER moves whenever we have ANY entry (shallow or
-    // deep). Move ordering cannot change a correct search's result, only its speed,
-    // so this is safe -- the depth guard above still governs SCORE reuse. (The old
-    // non-determinism came from the symmetry flag, since fixed statelessly.)
-    orderMoves(moves, ttHit ? &ttEntry : nullptr, killers, history, ply);
+    // Only use the TT entry for move ordering if it's from sufficient depth.
+    // CONFIRMED (not just theory): passing shallow entries to orderMoves yields WRONG
+    // scores on large searches -- e.g. an 11-empty all-unique position reports its
+    // margin off by 1 (59 vs the true 58). There is a latent alpha-beta/TT bug where
+    // move order leaks into the stored/returned score; until that root cause is fixed,
+    // shallow-entry ordering is unsafe. (Recovering this pruning is worth ~2.5x fewer
+    // nodes on big positions -- revisit after fixing the underlying TT bug.)
+    orderMoves(moves, ttValid ? &ttEntry : nullptr, killers, history, ply);
 
     int bestScore = -INF;
     Move bestMove = moves[0];
