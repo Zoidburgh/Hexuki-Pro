@@ -73,14 +73,25 @@ overhead), so "under 1 min" should be stated for a target environment.
   unchanged. Gate: **PASS** (root wasm byte-identical to gate binary).
 
 ### Phase 2 — Fewer nodes / search smarter (sound) — target ~1.5–2.5×
-- [ ] **Principal Variation Search (null-window).** Search move 1 full-window, the rest
-      with a null window, re-search only on a beat. Standard ~10–30% node cut.
-- [ ] **Aspiration windows.** Start each iterative-deepening iteration with a tight
-      window around the previous iteration's value; widen on fail.
-- [ ] **Move-ordering upgrades.** Better history/killer weighting; order by chain
-      impact. Better ordering shrinks the *effective* branching the most.
-- **Expected:** ~5–7 min → ~2–3 min.
-- **Risk:** medium (re-search / window logic) — fully caught by the gate.
+- [~] **Principal Variation Search (null-window).** ATTEMPTED, REVERTED — the gate
+      caught an off-by-one (user-11 −58 → −59, might_draw 6 → 7). **Root cause:** when the
+      TT holds a `LOWER_BOUND`, we narrow `alpha` above `alphaOrig` (`minimax.cpp:198`).
+      PVS's width-1 null window returns *bounds*, not exact values; when a move's true
+      value *equals* that TT lower bound, the null window can't distinguish "== bound"
+      from "< bound", fails low, and the fail-soft result lands in `(alphaOrig, beta)`
+      where the flag logic stamps it **EXACT** — storing a bound as exact corrupts the TT.
+      Same off-by-one family as the original bug. **PVS needs the TT-bound/flag interaction
+      reworked first** (don't narrow alpha into the flag's reference window, or track
+      exactness explicitly). Not a quick edit — own focused task. Gate did its job.
+- [ ] **Aspiration windows.** Same window/bound family as PVS — do AFTER the TT-bound/flag
+      rework, or it'll hit the same boundary bug. Also uncertain for our score scale
+      (multiplicative chain values swing hard between depths; tight δ -> constant re-search).
+- [ ] **Move-ordering upgrades (SAFEST Phase-2 item — pure reorder, cannot change value).**
+      Order by chain impact / better history weighting. Same safety class as Phase 1b.
+      Prefer this next if continuing sequential work — no window/bound risk.
+- **Expected:** ~5–7 min → ~2–3 min (if PVS lands after the TT fix).
+- **Risk:** the window/bound items (PVS, aspiration) are medium-risk and share the TT-flag
+  subtlety above. The gate is the oracle — it already blocked the bad PVS.
 
 ### Phase 3 — Re-measure & decide
 - [ ] Re-measure 13-empty after Phases 1–2 (realistically ~2–3 min).
@@ -113,8 +124,9 @@ overhead), so "under 1 min" should be stated for a target environment.
 | baseline | ordering fix | _(measure in P0)_ | ~3.25M | PASS | `29ac9ae` |
 | 0 | size it | 12e ~420s; 13e not yet | ~3.25M | PASS | — |
 | 1a | TT array (OOM fix) | 12e completes (no OOM) | ~5.0M (11e) | PASS | `dedfa8f` |
-| 1b | no-alloc move buffer | 11e 8.5s -> 6.2s | ~6.9M (11e) | PASS | _this_ |
+| 1b | no-alloc move buffer | 11e 8.5s -> 6.2s | ~6.9M (11e) | PASS | `4bd59bc` |
 | 1c | count-array tiles | _(deferred — small win)_ | | | TODO |
+| 2-PVS | PVS (null-window) | — | — | **FAIL (reverted)** | gate blocked off-by-one |
 | 2 | PVS + aspiration + ordering | | | | |
 | 4 | threads (Lazy SMP) | | | | |
 
