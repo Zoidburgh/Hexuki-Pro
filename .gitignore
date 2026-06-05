@@ -33,5 +33,6 @@ nul
 
 # Benchmark build output + transient runs (keep fixtures.json, baseline.json, scripts)
 bench/engine/
+bench/engine-*/
 bench/runs/
 c++engine/wasm_node/
