@@ -891,27 +891,8 @@ async function testWithMinimax() {
             return;
         }
 
-        // Log stats like visualizer
-        console.log(`⚡ C++ WASM Minimax: depth=${result.depth}, nodes=${result.nodes || result.nodesExplored}, score=${result.score}, time=${result.timeMs?.toFixed(0)}ms`);
-
-        // Get current scores
-        const currentScores = playGame.calculateScores();
-
-        // Minimax score is from current player's perspective (differential)
-        const differentialFromP1 = playGame.currentPlayer === 1 ? result.score : -result.score;
-
-        // Log prediction like visualizer
-        console.log('=== MINIMAX PREDICTION (Perfect Play) ===');
-        console.log(`Current Scores: P1: ${currentScores.player1} | P2: ${currentScores.player2}`);
-        console.log(`EXACT Final Differential: ${differentialFromP1 > 0 ? 'P1 +' : 'P2 +'}${Math.abs(differentialFromP1)} points`);
-
-        if (differentialFromP1 > 0) {
-            console.log(`🏆 P1 WINS by exactly ${differentialFromP1} points (deterministic)`);
-        } else if (differentialFromP1 < 0) {
-            console.log(`🏆 P2 WINS by exactly ${Math.abs(differentialFromP1)} points (deterministic)`);
-        } else {
-            console.log(`🤝 EXACT DRAW (both players tie)`);
-        }
+        // Grouped console readout (what the engine did)
+        logMinimaxSearch(position, emptyHexes, result, playGame);
 
         displayTestResults({
             engine: 'Minimax (depth 20)',
@@ -1152,23 +1133,7 @@ async function runMinimaxMove() {
         return;
     }
 
-    console.log(`⚡ C++ WASM Minimax: depth=${result.depth}, nodes=${result.nodes || result.nodesExplored}, score=${result.score}, time=${result.timeMs?.toFixed(0)}ms`);
-
-    // Get current scores and log prediction
-    const currentScores = playGame.calculateScores();
-    const differentialFromP1 = playGame.currentPlayer === 1 ? result.score : -result.score;
-
-    console.log('=== MINIMAX PREDICTION (Perfect Play) ===');
-    console.log(`Current Scores: P1: ${currentScores.player1} | P2: ${currentScores.player2}`);
-    console.log(`EXACT Final Differential: ${differentialFromP1 > 0 ? 'P1 +' : 'P2 +'}${Math.abs(differentialFromP1)} points`);
-
-    if (differentialFromP1 > 0) {
-        console.log(`🏆 P1 WINS by exactly ${differentialFromP1} points (deterministic)`);
-    } else if (differentialFromP1 < 0) {
-        console.log(`🏆 P2 WINS by exactly ${Math.abs(differentialFromP1)} points (deterministic)`);
-    } else {
-        console.log(`🤝 EXACT DRAW (both players tie)`);
-    }
+    logMinimaxSearch(position, emptyHexes, result, playGame);
 
     const success = await executeBestMove(result.hexId, result.tileValue);
     if (!success) {
@@ -1179,6 +1144,27 @@ async function runMinimaxMove() {
 
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Grouped, readable console readout of a minimax search (shows what the engine did)
+function logMinimaxSearch(position, emptyHexes, result, game) {
+    const nodes = result.nodes || result.nodesExplored || 0;
+    const ms = result.timeMs || 0;
+    const nps = ms > 0.05 ? Math.round(nodes / (ms / 1000)).toLocaleString() + ' nodes/sec' : 'instant';
+    const diffP1 = game.currentPlayer === 1 ? result.score : -result.score;
+    const outcome = diffP1 > 0 ? `P1 wins by ${diffP1}` : (diffP1 < 0 ? `P2 wins by ${-diffP1}` : 'exact draw');
+    const s = game.calculateScores();
+    const hdr = 'color:#7b8cff;font-weight:bold';
+    console.log('%c━━━━━━━━━━ MINIMAX · perfect play ━━━━━━━━━━', hdr);
+    console.log(`  to move    Player ${game.currentPlayer}   ·   ${emptyHexes} empty hexes`);
+    console.log(`  engine     C++ WASM  ·  precomputed legal-move table`);
+    console.log(`  depth      ${result.depth}  (searched to game end)`);
+    console.log(`  effort     ${nodes.toLocaleString()} nodes in ${ms.toFixed(2)} ms   ·   ${nps}`);
+    console.log(`  best move  H${result.hexId + 1} + tile ${result.tileValue}`);
+    console.log(`%c  outcome    ${outcome}  (deterministic)`, 'font-weight:bold');
+    console.log(`  scores now P1 ${s.player1}  |  P2 ${s.player2}`);
+    console.log(`  position   ${position}`);
+    console.log('%c━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━', hdr);
 }
 
 function displayTestResults(results) {
