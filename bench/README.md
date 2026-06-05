@@ -26,12 +26,19 @@ a node delta of anything other than 0% means search behavior changed.
 
 ```powershell
 pwsh bench/build.ps1                 # recompile c++engine -> bench/engine (~16-20s)
-node bench/run.cjs                   # measure -> bench/runs/latest.json
-node bench/compare.cjs               # diff latest vs baseline.json; exit 1 if any score regressed
+node bench/gate.cjs                  # THE GATE: correctness + determinism + consistency; exit 1 on any fail
 ```
 
-`compare.cjs` prints per-fixture correctness + node/time deltas and a totals line
-with overall node reduction and speedup. Exit code 0 = all scores preserved.
+**`gate.cjs` is the canonical check — run it before every deploy.** It enforces:
+1. **Correctness** — every fixture's score matches `baseline.json`.
+2. **Determinism** — same score + node count across repeated runs.
+3. **Consistency** — on big all-different-tile positions (`stress-fixtures.json`),
+   the perfect-play margin must not drift when you solve, play the best move, and
+   solve again. This is the exact check that catches the off-by-one TT/ordering bug
+   class that the small fixtures missed. Only deploy when the gate says PASS.
+
+For per-fixture node/time deltas (the speed story), also run `node bench/run.cjs`
+then `node bench/compare.cjs latest baseline`.
 
 ## Files
 
