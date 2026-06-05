@@ -3,9 +3,9 @@
     "fixtures": 48,
     "repeats": 3,
     "timeoutMs": 60000,
-    "totalNodes": 3953763,
-    "totalSolveMs": 2143.5,
-    "wallMs": 6856,
+    "totalNodes": 3911581,
+    "totalSolveMs": 1783.6,
+    "wallMs": 5615,
     "anyTimedOut": false,
     "anyNodesUnstable": false
   },
@@ -18,7 +18,7 @@
       "score": 35,
       "depth": 11,
       "nodes": 1071384,
-      "timeMs": 567.768,
+      "timeMs": 478.272,
       "nodesStable": true,
       "timedOut": false
     },
@@ -30,7 +30,7 @@
       "score": 30216,
       "depth": 11,
       "nodes": 15369,
-      "timeMs": 11.134,
+      "timeMs": 8.582,
       "nodesStable": true,
       "timedOut": false
     },
@@ -42,7 +42,7 @@
       "score": -3,
       "depth": 11,
       "nodes": 23685,
-      "timeMs": 13.649,
+      "timeMs": 12.183,
       "nodesStable": true,
       "timedOut": false
     },
@@ -54,7 +54,7 @@
       "score": 4053,
       "depth": 11,
       "nodes": 220460,
-      "timeMs": 109.115,
+      "timeMs": 95.994,
       "nodesStable": true,
       "timedOut": false
     },
@@ -66,7 +66,7 @@
       "score": -1120,
       "depth": 11,
       "nodes": 47391,
-      "timeMs": 26.532,
+      "timeMs": 23.49,
       "nodesStable": true,
       "timedOut": false
     },
@@ -78,7 +78,7 @@
       "score": 384,
       "depth": 11,
       "nodes": 18406,
-      "timeMs": 12.063,
+      "timeMs": 11.078,
       "nodesStable": true,
       "timedOut": false
     },
@@ -90,19 +90,19 @@
       "score": -237,
       "depth": 11,
       "nodes": 27441,
-      "timeMs": 15.357,
+      "timeMs": 13.264,
       "nodesStable": true,
       "timedOut": false
     },
     {
       "name": "3_4_and_5@10",
       "emptyHexes": 10,
-      "hexId": 6,
+      "hexId": 12,
       "tileValue": 2,
-      "score": -5,
+      "score": 0,
       "depth": 10,
-      "nodes": 359543,
-      "timeMs": 168.545,
+      "nodes": 316211,
+      "timeMs": 136.986,
       "nodesStable": true,
       "timedOut": false
     },
@@ -114,7 +114,7 @@
       "score": -30216,
       "depth": 10,
       "nodes": 7388,
-      "timeMs": 5.205,
+      "timeMs": 4.629,
       "nodesStable": true,
       "timedOut": false
     },
@@ -126,7 +126,7 @@
       "score": 23,
       "depth": 10,
       "nodes": 11272,
-      "timeMs": 8.134,
+      "timeMs": 5.774,
       "nodesStable": true,
       "timedOut": false
     },
@@ -138,7 +138,7 @@
       "score": -1233,
       "depth": 10,
       "nodes": 81848,
-      "timeMs": 48.479,
+      "timeMs": 32.483,
       "nodesStable": true,
       "timedOut": false
     },
@@ -150,7 +150,7 @@
       "score": 2560,
       "depth": 10,
       "nodes": 15924,
-      "timeMs": 12.432,
+      "timeMs": 8.105,
       "nodesStable": true,
       "timedOut": false
     },
@@ -162,7 +162,7 @@
       "score": -384,
       "depth": 10,
       "nodes": 8458,
-      "timeMs": 7.44,
+      "timeMs": 5.213,
       "nodesStable": true,
       "timedOut": false
     },
@@ -174,7 +174,7 @@
       "score": 538,
       "depth": 10,
       "nodes": 8448,
-      "timeMs": 8.272,
+      "timeMs": 5.154,
       "nodesStable": true,
       "timedOut": false
     },
@@ -186,7 +186,7 @@
       "score": 35,
       "depth": 9,
       "nodes": 70516,
-      "timeMs": 39.372,
+      "timeMs": 25.713,
       "nodesStable": true,
       "timedOut": false
     },
@@ -198,7 +198,7 @@
       "score": 30216,
       "depth": 9,
       "nodes": 3473,
-      "timeMs": 4.384,
+      "timeMs": 2.791,
       "nodesStable": true,
       "timedOut": false
     },
@@ -210,7 +210,7 @@
       "score": -3,
       "depth": 9,
       "nodes": 4530,
-      "timeMs": 4.697,
+      "timeMs": 3.308,
       "nodesStable": true,
       "timedOut": false
     },
@@ -222,7 +222,7 @@
       "score": 4053,
       "depth": 9,
       "nodes": 32943,
-      "timeMs": 20.669,
+      "timeMs": 12.377,
       "nodesStable": true,
       "timedOut": false
     },
@@ -234,7 +234,7 @@
       "score": -1120,
       "depth": 9,
       "nodes": 6998,
-      "timeMs": 7.22,
+      "timeMs": 4.191,
       "nodesStable": true,
       "timedOut": false
     },
@@ -246,7 +246,7 @@
       "score": 384,
       "depth": 9,
       "nodes": 4337,
-      "timeMs": 4.37,
+      "timeMs": 3.18,
       "nodesStable": true,
       "timedOut": false
     },
@@ -258,7 +258,7 @@
       "score": 6,
       "depth": 9,
       "nodes": 1652962,
-      "timeMs": 875.134,
+      "timeMs": 742.498,
       "nodesStable": true,
       "timedOut": false
     },
@@ -270,19 +270,19 @@
       "score": -538,
       "depth": 9,
       "nodes": 3118,
-      "timeMs": 3.234,
+      "timeMs": 2.595,
       "nodesStable": true,
       "timedOut": false
     },
     {
       "name": "3_4_and_5@8",
       "emptyHexes": 8,
-      "hexId": 12,
-      "tileValue": 2,
-      "score": 0,
+      "hexId": 8,
+      "tileValue": 3,
+      "score": 5,
       "depth": 8,
-      "nodes": 7063,
-      "timeMs": 5.839,
+      "nodes": 8300,
+      "timeMs": 4.239,
       "nodesStable": true,
       "timedOut": false
     },
@@ -294,7 +294,7 @@
       "score": -30216,
       "depth": 8,
       "nodes": 1478,
-      "timeMs": 2.584,
+      "timeMs": 1.717,
       "nodesStable": true,
       "timedOut": false
     },
@@ -306,7 +306,7 @@
       "score": 3,
       "depth": 8,
       "nodes": 2326,
-      "timeMs": 3.551,
+      "timeMs": 1.97,
       "nodesStable": true,
       "timedOut": false
     },
@@ -318,7 +318,7 @@
       "score": -1188,
       "depth": 8,
       "nodes": 8312,
-      "timeMs": 5.218,
+      "timeMs": 3.748,
       "nodesStable": true,
       "timedOut": false
     },
@@ -330,7 +330,7 @@
       "score": 2560,
       "depth": 8,
       "nodes": 1676,
-      "timeMs": 2.957,
+      "timeMs": 1.708,
       "nodesStable": true,
       "timedOut": false
     },
@@ -342,7 +342,7 @@
       "score": -384,
       "depth": 8,
       "nodes": 2030,
-      "timeMs": 2.837,
+      "timeMs": 1.887,
       "nodesStable": true,
       "timedOut": false
     },
@@ -354,7 +354,7 @@
       "score": 12,
       "depth": 8,
       "nodes": 174323,
-      "timeMs": 86.504,
+      "timeMs": 68.132,
       "nodesStable": true,
       "timedOut": false
     },
@@ -366,7 +366,7 @@
       "score": 538,
       "depth": 8,
       "nodes": 2155,
-      "timeMs": 3.461,
+      "timeMs": 3.025,
       "nodesStable": true,
       "timedOut": false
     },
@@ -378,7 +378,7 @@
       "score": 5,
       "depth": 7,
       "nodes": 3904,
-      "timeMs": 3.476,
+      "timeMs": 3.722,
       "nodesStable": true,
       "timedOut": false
     },
@@ -390,7 +390,7 @@
       "score": 30216,
       "depth": 7,
       "nodes": 653,
-      "timeMs": 2.409,
+      "timeMs": 1.411,
       "nodesStable": true,
       "timedOut": false
     },
@@ -402,7 +402,7 @@
       "score": -3,
       "depth": 7,
       "nodes": 1055,
-      "timeMs": 2.697,
+      "timeMs": 1.483,
       "nodesStable": true,
       "timedOut": false
     },
@@ -414,7 +414,7 @@
       "score": 1188,
       "depth": 7,
       "nodes": 3790,
-      "timeMs": 2.534,
+      "timeMs": 3.781,
       "nodesStable": true,
       "timedOut": false
     },
@@ -426,7 +426,7 @@
       "score": -805,
       "depth": 7,
       "nodes": 838,
-      "timeMs": 2.601,
+      "timeMs": 2.447,
       "nodesStable": true,
       "timedOut": false
     },
@@ -438,7 +438,7 @@
       "score": 0,
       "depth": 7,
       "nodes": 9936,
-      "timeMs": 4.296,
+      "timeMs": 6.339,
       "nodesStable": true,
       "timedOut": false
     },
@@ -450,7 +450,7 @@
       "score": 384,
       "depth": 7,
       "nodes": 933,
-      "timeMs": 2.467,
+      "timeMs": 2.558,
       "nodesStable": true,
       "timedOut": false
     },
@@ -462,7 +462,7 @@
       "score": 11,
       "depth": 7,
       "nodes": 25255,
-      "timeMs": 10.228,
+      "timeMs": 12.12,
       "nodesStable": true,
       "timedOut": false
     },
@@ -474,7 +474,7 @@
       "score": -254,
       "depth": 7,
       "nodes": 820,
-      "timeMs": 2.437,
+      "timeMs": 2.458,
       "nodesStable": true,
       "timedOut": false
     },
@@ -485,8 +485,8 @@
       "tileValue": 2,
       "score": 0,
       "depth": 6,
-      "nodes": 1573,
-      "timeMs": 2.885,
+      "nodes": 1486,
+      "timeMs": 2.763,
       "nodesStable": true,
       "timedOut": false
     },
@@ -498,7 +498,7 @@
       "score": -30216,
       "depth": 6,
       "nodes": 340,
-      "timeMs": 1.835,
+      "timeMs": 2.196,
       "nodesStable": true,
       "timedOut": false
     },
@@ -510,7 +510,7 @@
       "score": 3,
       "depth": 6,
       "nodes": 466,
-      "timeMs": 2.376,
+      "timeMs": 2.246,
       "nodesStable": true,
       "timedOut": false
     },
@@ -522,7 +522,7 @@
       "score": -138,
       "depth": 6,
       "nodes": 698,
-      "timeMs": 2.573,
+      "timeMs": 2.378,
       "nodesStable": true,
       "timedOut": false
     },
@@ -534,7 +534,7 @@
       "score": 1111,
       "depth": 6,
       "nodes": 371,
-      "timeMs": 2.392,
+      "timeMs": 2.211,
       "nodesStable": true,
       "timedOut": false
     },
@@ -546,7 +546,7 @@
       "score": 0,
       "depth": 6,
       "nodes": 2111,
-      "timeMs": 3.075,
+      "timeMs": 2.852,
       "nodesStable": true,
       "timedOut": false
     },
@@ -558,7 +558,7 @@
       "score": -384,
       "depth": 6,
       "nodes": 433,
-      "timeMs": 2.293,
+      "timeMs": 2.223,
       "nodesStable": true,
       "timedOut": false
     },
@@ -570,7 +570,7 @@
       "score": 19,
       "depth": 6,
       "nodes": 4857,
-      "timeMs": 4.418,
+      "timeMs": 3.861,
       "nodesStable": true,
       "timedOut": false
     },
@@ -582,7 +582,7 @@
       "score": 544,
       "depth": 6,
       "nodes": 473,
-      "timeMs": 2.384,
+      "timeMs": 2.276,
       "nodesStable": true,
       "timedOut": false
     }

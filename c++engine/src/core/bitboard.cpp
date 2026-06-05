@@ -389,6 +389,34 @@ bool HexukiBitboard::isBoardMirrored() const {
 }
 
 // ============================================================================
+// Stateless Anti-Symmetry (no make/unmake state -> cannot corrupt the search)
+// ============================================================================
+
+// Is the board perfectly vertically mirrored, treating subHexId as if it held
+// subValue? Pass subHexId = -1 to test the board exactly as it is. A pair counts
+// as "matched" only when both hexes are empty or both hold the same value.
+bool HexukiBitboard::wouldBeMirrored(int subHexId, int subValue) const {
+    for (int hexId = 0; hexId < NUM_HEXES; hexId++) {
+        int mirrorHexId = VERTICAL_MIRROR_PAIRS[hexId];
+        if (mirrorHexId <= hexId) continue;  // skip center (self-mirror); visit each pair once
+        int v1 = (hexId == subHexId) ? subValue : hexValues[hexId];
+        int v2 = (mirrorHexId == subHexId) ? subValue : hexValues[mirrorHexId];
+        if ((v1 == 0) != (v2 == 0)) return false;          // one empty, one filled
+        if (v1 != 0 && v2 != 0 && v1 != v2) return false;  // both filled, different
+    }
+    return true;
+}
+
+// A move is forbidden when it turns an un-mirrored board into a mirrored one,
+// and only when both players hold identical tile sets (otherwise mirroring is
+// not a concern). Axis moves from an already-mirrored board stay legal.
+bool HexukiBitboard::createsForbiddenSymmetry(int hexId, int tileValue) const {
+    if (!tilesAreIdentical) return false;
+    if (wouldBeMirrored(-1, 0)) return false;   // board already mirrored
+    return wouldBeMirrored(hexId, tileValue);
+}
+
+// ============================================================================
 // Move Validation (REAL rules from JavaScript)
 // ============================================================================
 
@@ -424,7 +452,10 @@ bool HexukiBitboard::isValidMove(const Move& move) const {
         return false;
     }
 
-    // Symmetry checks removed - no longer enforcing anti-symmetry rule
+    // Anti-symmetry rule (stateless): reject a move that would mirror the board
+    if (createsForbiddenSymmetry(move.hexId, move.tileValue)) {
+        return false;
+    }
 
     return true;
 }
@@ -448,7 +479,10 @@ std::vector<Move> HexukiBitboard::getValidMoves() const {
         }
     }
 
-    // Symmetry checks removed - no longer enforcing anti-symmetry rule
+    // Anti-symmetry: only relevant when both players hold identical tiles AND the
+    // board isn't already mirrored (axis moves from a symmetric board stay legal).
+    // Stateless -> nothing in make/unmake to corrupt. Computed once per node.
+    const bool checkSymmetry = tilesAreIdentical && !wouldBeMirrored(-1, 0);
 
     for (int hexId = 0; hexId < NUM_HEXES; hexId++) {
         if (isHexOccupied(hexId)) continue;
@@ -456,7 +490,8 @@ std::vector<Move> HexukiBitboard::getValidMoves() const {
         if (isMoveLegal(hexId)) {
             // Try each unique tile value (avoids generating duplicate moves)
             for (int tileValue : uniqueTileValues) {
-                // Add all valid moves without symmetry checks
+                // Reject a move that would make the board a perfect mirror
+                if (checkSymmetry && wouldBeMirrored(hexId, tileValue)) continue;
                 moves.push_back(Move(hexId, tileValue));
             }
         }

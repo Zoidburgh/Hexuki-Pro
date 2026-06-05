@@ -404,22 +404,30 @@ class HexukiGameEngineAsymmetric {
      * Returns true if successful, false if illegal
      */
     makeMove(hexId, tileValue) {
+        this.lastError = null;
+
         // Validate move
         if (!this.isMoveLegal(hexId)) {
+            this.lastError = 'Invalid move (hex filled, not adjacent, or breaks the chain rule).';
             return false;
         }
 
         // Validate tile is available
         const availableTiles = this.currentPlayer === 1 ? this.player1Tiles : this.player2Tiles;
         if (!availableTiles.includes(tileValue)) {
+            this.lastError = 'That tile is not available.';
+            return false;
+        }
+
+        // Anti-symmetry rule (stateless): reject a move that would mirror the board
+        if (this.createsForbiddenSymmetry(hexId, tileValue)) {
+            this.lastError = 'No symmetry moves allowed.';
             return false;
         }
 
         // Place the tile
         this.board[hexId].value = tileValue;
         this.board[hexId].owner = `player${this.currentPlayer}`;
-
-        // Symmetry checks removed - no longer enforcing anti-symmetry rule
 
         // Move is valid - finalize it
         // Remove tile from available tiles
@@ -534,6 +542,29 @@ class HexukiGameEngineAsymmetric {
         return isCurrentlySymmetric;
     }
 
+    // ── Stateless anti-symmetry (mirrors the C++ bitboard; no flag to corrupt) ──
+    // Is the board perfectly vertically mirrored, treating subHex as holding subVal?
+    // Pass subHex = -1 to test the board as-is. subVal is always a real tile (never null).
+    wouldBeMirrored(subHex, subVal) {
+        for (let h = 0; h < 19; h++) {
+            const mh = this.verticalMirrorPairs[h];
+            if (mh <= h) continue;  // skip center (self-mirror); visit each pair once
+            const v1 = (h === subHex) ? subVal : this.board[h].value;
+            const v2 = (mh === subHex) ? subVal : this.board[mh].value;
+            if ((v1 === null) !== (v2 === null)) return false;          // one empty, one filled
+            if (v1 !== null && v2 !== null && v1 !== v2) return false;  // both filled, different
+        }
+        return true;
+    }
+
+    // A move is forbidden if it turns an un-mirrored board into a mirrored one,
+    // and only when both players hold identical tile sets.
+    createsForbiddenSymmetry(hexId, tileValue) {
+        if (!this.tilesAreIdentical) return false;
+        if (this.wouldBeMirrored(-1, 0)) return false;  // already mirrored: axis moves legal
+        return this.wouldBeMirrored(hexId, tileValue);
+    }
+
     /**
      * Get all valid moves for current player
      */
@@ -541,7 +572,9 @@ class HexukiGameEngineAsymmetric {
         const moves = [];
         const availableTiles = this.currentPlayer === 1 ? this.player1Tiles : this.player2Tiles;
 
-        // Symmetry checks removed - no longer enforcing anti-symmetry rule
+        // Anti-symmetry: only when tiles are identical and the board isn't already
+        // mirrored. Stateless -> nothing to corrupt. Computed once per call.
+        const checkSymmetry = this.tilesAreIdentical && !this.wouldBeMirrored(-1, 0);
 
         for (let hexId = 0; hexId < 19; hexId++) {
             if (this.board[hexId].value !== null) continue;
@@ -549,7 +582,8 @@ class HexukiGameEngineAsymmetric {
             if (this.isMoveLegal(hexId)) {
                 // Try each available tile
                 for (let tileValue of availableTiles) {
-                    // Add all valid moves without symmetry checks
+                    // Reject a move that would make the board a perfect mirror
+                    if (checkSymmetry && this.wouldBeMirrored(hexId, tileValue)) continue;
                     moves.push({ hexId, tileValue });
                 }
             }

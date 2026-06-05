@@ -1263,6 +1263,10 @@ function startPlaying() {
     playGame.player2Tiles = [...p2Tiles];
     playGame.currentPlayer = startingPlayer;
 
+    // Anti-symmetry gate: recompute now that the puzzle's tiles are loaded
+    // (the constructor set this from random tiles, so it must be refreshed).
+    playGame.tilesAreIdentical = playGame.tilesMatch(playGame.player1Tiles, playGame.player2Tiles);
+
     // Calculate moveCount based on how many tiles have been used total
     // This is important for anti-symmetry rule to know if this is the final move
     const totalTilesUsed = (9 - playGame.player1Tiles.length) + (9 - playGame.player2Tiles.length);
@@ -1307,6 +1311,9 @@ function resetPlay() {
     playGame.player1Tiles = [...p1Tiles];
     playGame.player2Tiles = [...p2Tiles];
     playGame.currentPlayer = startingPlayer;
+
+    // Anti-symmetry gate: recompute now that the puzzle's tiles are loaded
+    playGame.tilesAreIdentical = playGame.tilesMatch(playGame.player1Tiles, playGame.player2Tiles);
 
     selectedPlayTile = null;
     moveHistory = [];
