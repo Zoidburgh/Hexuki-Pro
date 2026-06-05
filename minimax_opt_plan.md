@@ -98,16 +98,50 @@ overhead), so "under 1 min" should be stated for a target environment.
 - Sound *sequential* techniques top out around here. If we want <1 min, go to Phase 4.
 
 ### Phase 4 — Parallelism (the key to <1 min; hardest) — target ~3–6×
-- [ ] **WASM threads** (SharedArrayBuffer + pthreads); requires COOP/COEP headers on the
-      dev server.
-- [ ] **Lazy SMP:** N worker threads share the (flat array) TT and search the same tree
-      at staggered depths; the shared table compounds across threads.
-- [ ] **Thread-safe TT** (lockless slot writes or sharded) — enabled by the Phase-1 array.
-- [ ] Relax the gate's *determinism* check to **"same value, node count may vary"** — the
-      value must stay exactly correct even though thread timing changes node counts.
+
+**Readiness check (done — see below). Toolchain GO; one server blocker to fix.**
+
+Verified this session:
+- ✅ **Toolchain**: emscripten **4.0.18** builds a `-pthread -sPROXY_TO_PTHREAD -sPTHREAD_POOL_SIZE`
+  WASM cleanly, and **Node runs it** (2-thread atomic test returned 42). No toolchain blocker.
+- ⚠️ **Browser server header BLOCKER**: the editor is served by `python -m http.server`
+  (`START_SERVER.bat`), which sends **no COOP/COEP headers** -> `SharedArrayBuffer` is
+  disabled in the browser -> threads won't run *in the editor*. Fix: a ~15-line custom
+  Python handler that adds `Cross-Origin-Opener-Policy: same-origin` +
+  `Cross-Origin-Embedder-Policy: require-corp`. (Node/bench doesn't need this — it uses
+  worker_threads directly.) **Must ship this with the threaded build or the editor breaks.**
+- **TT is currently per-call**: `findBestMove` builds a local `TranspositionTable tt`
+  (`minimax.cpp:301`). Lazy SMP needs ONE table shared by all workers -> make it
+  thread-safe and share it. The Phase-1 flat array makes this feasible.
+- **Search entry**: parallelize *inside* `findBestMove`; `wasmMinimaxFindBestMove` is
+  unchanged. Each worker runs its own iterative-deepening over the root, sharing the TT.
+
+Design:
+- [ ] **Build**: add `-pthread -sPROXY_TO_PTHREAD=1 -sPTHREAD_POOL_SIZE=<N>` and
+      `ALLOW_MEMORY_GROWTH` care (growth + threads needs `-sMAXIMUM_MEMORY`). Two build
+      targets: editor (web) and bench (node).
+- [ ] **COOP/COEP server** replacing the bare `http.server` line in `START_SERVER.bat`.
+- [ ] **Lazy SMP**: main thread is authoritative; N-1 helpers search the same root with
+      staggered depth/ordering to diversify, all sharing the TT. An atomic stop-flag joins
+      helpers when the main thread's deepest iteration completes. Main's result is returned.
+- [ ] **Thread-safe TT**: a torn slot read (key from one write, entry from another) could
+      hand back a *wrong bound* and corrupt the value — TT races are NOT auto-safe the way
+      single-thread eviction is. Use the **Hyatt lockless XOR** (store `key ^ data`; a torn
+      read fails the key check -> treated as a miss -> recompute -> correct). This is the
+      single most important correctness point of Phase 4.
+- [ ] **Gate change**: relax *determinism* to **"same value, node count may vary"** (thread
+      timing changes node counts and best-move-among-equals). Keep correctness-vs-baseline
+      and consistency STRICT — the exact value must not move.
 - **Expected:** ~2–3 min → **~30–60s** (scales with cores). This closes the gap.
 - **Risk:** high (concurrency, TT races, determinism semantics) — the gate's
   correctness + consistency checks remain the oracle.
+
+**Open decisions for the user (before implementing):**
+1. **Thread count** — fixed (e.g. 4) or `navigator.hardwareConcurrency - 1` / `cores-1`?
+2. **Editor server** — OK to replace the `http.server` line in `START_SERVER.bat` with a
+   tiny COOP/COEP-adding Python script? (Required for browser threads.)
+3. **Determinism semantics** — confirm we accept "exact value preserved, node counts vary"
+   as the new correctness contract (the gate enforces the value; node-count stability drops).
 
 ### Phase 5 — Polish
 - [ ] **Embed the legal-move table** as a static array (instant engine load; no ~1.3s
