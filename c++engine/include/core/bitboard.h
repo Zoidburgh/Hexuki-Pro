@@ -52,6 +52,11 @@ public:
     void makeMove(const Move& move);
     void unmakeMove(const Move& move);  // Undo move (for minimax)
 
+    // Precomputed legal-move locations: occupancy(19 bits) -> legal-hex mask.
+    // Legality (adjacency + chain length) depends only on occupancy, so this is a
+    // pure memoization of isMoveLegal() over all 2^19 occupancies. Build once.
+    static void ensureLegalTable();
+
     // Utility
     void reset();  // Reset to initial game state
     uint64_t getHash() const { return zobristHash; }  // For transposition table
@@ -112,6 +117,7 @@ private:
 
     // Move legality (REAL rules)
     bool isMoveLegal(int hexId) const;  // Check position legality
+    static void buildLegalHexTable();   // fill the legal-hex table from isMoveLegal()
     bool checkChainLengthConstraint(int hexId) const;  // Chain length rule
     bool isBoardMirrored() const;  // Anti-symmetry check (legacy; superseded by wouldBeMirrored)
     // Stateless anti-symmetry: computed from board state, so there is NO make/unmake

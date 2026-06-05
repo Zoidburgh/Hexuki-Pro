@@ -35,6 +35,7 @@ EMSCRIPTEN_KEEPALIVE
 extern "C" void wasmInitialize() {
     if (!g_initialized) {
         Zobrist::initialize();
+        HexukiBitboard::ensureLegalTable();  // build the 2 MB legal-hex table once, up front
         g_board = new HexukiBitboard();
         g_mcts = new mcts::MCTS();
         g_initialized = true;

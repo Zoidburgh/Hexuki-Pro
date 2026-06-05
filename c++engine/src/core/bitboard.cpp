@@ -25,6 +25,11 @@ static bool tilesMatch(std::vector<int> tiles1, std::vector<int> tiles2) {
     return tiles1 == tiles2;
 }
 
+// Precomputed legal-hex table: occupancy(19 bits) -> 19-bit mask of legal hex
+// locations. 2^19 entries x 4 bytes = 2 MB, zero-init (does not bloat the binary).
+static uint32_t g_legalHexMask[1u << NUM_HEXES];
+static bool g_legalTableBuilt = false;
+
 // ============================================================================
 // Constructor & Reset
 // ============================================================================
@@ -460,7 +465,32 @@ bool HexukiBitboard::isValidMove(const Move& move) const {
     return true;
 }
 
+// Build the legal-hex table once by running the REAL isMoveLegal() over every
+// occupancy. Legality (adjacency + chain length) reads only occupancy, so this is
+// an exact memoization of the existing rules -- not a reimplementation.
+void HexukiBitboard::buildLegalHexTable() {
+    HexukiBitboard scratch;  // hexValues are irrelevant to legality; only occupancy matters
+    for (uint32_t occ = 0; occ < (1u << NUM_HEXES); occ++) {
+        scratch.hexOccupied = occ;
+        uint32_t legal = 0;
+        for (int h = 0; h < NUM_HEXES; h++) {
+            // legal location iff empty AND passes the real adjacency + chain rules
+            if (!(occ & (1u << h)) && scratch.isMoveLegal(h)) {
+                legal |= (1u << h);
+            }
+        }
+        g_legalHexMask[occ] = legal;
+    }
+}
+
+void HexukiBitboard::ensureLegalTable() {
+    if (g_legalTableBuilt) return;
+    buildLegalHexTable();
+    g_legalTableBuilt = true;
+}
+
 std::vector<Move> HexukiBitboard::getValidMoves() const {
+    ensureLegalTable();  // no-op after the first build
     std::vector<Move> moves;
 
     // OPTIMIZATION: Use const reference to avoid copying the tiles vector
@@ -484,16 +514,18 @@ std::vector<Move> HexukiBitboard::getValidMoves() const {
     // Stateless -> nothing in make/unmake to corrupt. Computed once per node.
     const bool checkSymmetry = tilesAreIdentical && !wouldBeMirrored(-1, 0);
 
-    for (int hexId = 0; hexId < NUM_HEXES; hexId++) {
-        if (isHexOccupied(hexId)) continue;
+    // Legal hex LOCATIONS come from the precomputed table -- one lookup replaces
+    // the per-hex adjacency + chain walk. The bit is set only for empty, legal hexes.
+    const uint32_t legal = g_legalHexMask[hexOccupied];
 
-        if (isMoveLegal(hexId)) {
-            // Try each unique tile value (avoids generating duplicate moves)
-            for (int tileValue : uniqueTileValues) {
-                // Reject a move that would make the board a perfect mirror
-                if (checkSymmetry && wouldBeMirrored(hexId, tileValue)) continue;
-                moves.push_back(Move(hexId, tileValue));
-            }
+    for (int hexId = 0; hexId < NUM_HEXES; hexId++) {
+        if (!(legal & (1u << hexId))) continue;   // table: not a legal location
+
+        // Try each unique tile value (avoids generating duplicate moves)
+        for (int tileValue : uniqueTileValues) {
+            // Reject a move that would make the board a perfect mirror
+            if (checkSymmetry && wouldBeMirrored(hexId, tileValue)) continue;
+            moves.push_back(Move(hexId, tileValue));
         }
     }
 
