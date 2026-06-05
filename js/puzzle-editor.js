@@ -879,7 +879,7 @@ async function testWithMinimax() {
         console.log(`⚡ C++ WASM Minimax: running depth ${depth} search...`);
 
         wasmModule.loadPosition(position);
-        const resultJson = wasmModule.minimaxFindBestMove(depth, 120000);  // Dynamic depth, timeout=120000ms (2 minutes)
+        const resultJson = wasmModule.minimaxFindBestMove(depth, 600000);  // timeout=600000ms (10 min) — long enough for a 12-empty to solve fully; timed-out results are flagged honestly in logMinimaxSearch
         const result = JSON.parse(resultJson);
 
         // Check for minimax failure (sentinel values)
@@ -895,9 +895,10 @@ async function testWithMinimax() {
         logMinimaxSearch(position, emptyHexes, result, playGame);
 
         displayTestResults({
-            engine: 'Minimax (depth 20)',
+            engine: `Minimax (depth ${result.depth})`,
             bestMove: `H${result.hexId + 1}+${result.tileValue}`,
             score: result.score,
+            timedOut: result.timeout || result.depth < emptyHexes,
             nodesExplored: (result.nodes || result.nodesExplored) ? (result.nodes || result.nodesExplored).toLocaleString() : 'N/A'
         });
 
@@ -1146,7 +1147,10 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// Grouped, readable console readout of a minimax search (shows what the engine did)
+// Grouped, readable console readout of a minimax search (shows what the engine did).
+// CRITICAL: only present "perfect play / solved to game end" when the search actually
+// COMPLETED. A timed-out search returns the last completed (shallower) depth, whose value
+// is a depth-limited HEURISTIC -- not the true endgame value. Never label that a solve.
 function logMinimaxSearch(position, emptyHexes, result, game) {
     const nodes = result.nodes || result.nodesExplored || 0;
     const ms = result.timeMs || 0;
@@ -1154,17 +1158,29 @@ function logMinimaxSearch(position, emptyHexes, result, game) {
     const diffP1 = game.currentPlayer === 1 ? result.score : -result.score;
     const outcome = diffP1 > 0 ? `P1 wins by ${diffP1}` : (diffP1 < 0 ? `P2 wins by ${-diffP1}` : 'exact draw');
     const s = game.calculateScores();
-    const hdr = 'color:#7b8cff;font-weight:bold';
-    console.log('%c━━━━━━━━━━ MINIMAX · perfect play ━━━━━━━━━━', hdr);
+    // A real solve reaches game end (full board) AND did not hit the time limit.
+    const complete = !result.timeout && result.depth >= emptyHexes;
+    const hdr = complete ? 'color:#7b8cff;font-weight:bold' : 'color:#ff9933;font-weight:bold';
+    const warn = 'color:#ff9933;font-weight:bold';
+
+    console.log(`%c━━━━━━━━━━ MINIMAX · ${complete ? 'perfect play' : '⚠ TIMED OUT — NOT a solve'} ━━━━━━━━━━`, hdr);
     console.log(`  to move    Player ${game.currentPlayer}   ·   ${emptyHexes} empty hexes`);
     console.log(`  engine     C++ WASM  ·  precomputed legal-move table`);
-    console.log(`  depth      ${result.depth}  (searched to game end)`);
-    console.log(`  effort     ${nodes.toLocaleString()} nodes in ${ms.toFixed(2)} ms   ·   ${nps}`);
-    console.log(`  best move  H${result.hexId + 1} + tile ${result.tileValue}`);
-    console.log(`%c  outcome    ${outcome}  (deterministic)`, 'font-weight:bold');
+    if (complete) {
+        console.log(`  depth      ${result.depth}  (searched to game end)`);
+        console.log(`  effort     ${nodes.toLocaleString()} nodes in ${ms.toFixed(2)} ms   ·   ${nps}`);
+        console.log(`  best move  H${result.hexId + 1} + tile ${result.tileValue}`);
+        console.log(`%c  outcome    ${outcome}  (deterministic)`, 'font-weight:bold');
+    } else {
+        console.log(`%c  depth      ${result.depth} of ${emptyHexes}  (TIMED OUT before game end)`, warn);
+        console.log(`  effort     ${nodes.toLocaleString()} nodes in ${ms.toFixed(2)} ms   ·   ${nps}`);
+        console.log(`  best move  H${result.hexId + 1} + tile ${result.tileValue}  (best at depth ${result.depth} — may not be optimal)`);
+        console.log(`%c  outcome    ${outcome}  (⚠ depth-${result.depth} HEURISTIC — NOT the true value)`, warn);
+        console.log(`%c  WARNING    timed out — raise the timeout to solve fully. Do NOT bake this value into a puzzle.`, warn);
+    }
     console.log(`  scores now P1 ${s.player1}  |  P2 ${s.player2}`);
     console.log(`  position   ${position}`);
-    console.log('%c━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━', hdr);
+    console.log(`%c━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`, hdr);
 }
 
 function displayTestResults(results) {
@@ -1173,6 +1189,9 @@ function displayTestResults(results) {
     let html = '<div style="background: rgba(102, 126, 234, 0.2); border-left: 4px solid #667eea; padding: 15px; border-radius: 6px; margin-top: 15px;">';
     html += `<h3 style="margin-top: 0; color: #667eea;">🤖 ${results.engine}</h3>`;
     html += `<div style="font-family: 'JetBrains Mono', monospace; font-size: 14px;">`;
+    if (results.timedOut) {
+        html += `<div style="background: rgba(255,153,51,0.2); border-left: 4px solid #ff9933; padding: 8px; border-radius: 4px; margin-bottom: 8px; color: #ff9933; font-weight: bold;">⚠ TIMED OUT — depth-limited heuristic, NOT a full solve. Value/move may be wrong. Do not bake into a puzzle.</div>`;
+    }
     html += `<div><strong>Best Move:</strong> ${results.bestMove}</div>`;
 
     if (results.winRate) {

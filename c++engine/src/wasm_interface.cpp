@@ -218,7 +218,11 @@ extern "C" const char* wasmMinimaxFindBestMove(int depth, int timeLimitMs) {
     result += "\"score\":" + std::to_string(searchResult.score) + ",";
     result += "\"depth\":" + std::to_string(searchResult.depth) + ",";
     result += "\"nodes\":" + std::to_string(searchResult.nodesSearched) + ",";
-    result += "\"timeMs\":" + std::to_string(searchResult.timeMs);
+    result += "\"timeMs\":" + std::to_string(searchResult.timeMs) + ",";
+    // Did the search hit its time limit? If true, the result is the last COMPLETED
+    // (shallower) iteration -- NOT a solve to game end. Callers must not present a
+    // timed-out result as perfect play.
+    result += "\"timeout\":" + std::string(searchResult.timeout ? "true" : "false");
     result += "}";
 
     return result.c_str();
