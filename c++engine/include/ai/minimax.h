@@ -3,7 +3,8 @@
 
 #include "core/bitboard.h"
 #include "core/move.h"
-#include <unordered_map>
+#include <vector>
+#include <cstdint>
 #include <chrono>
 
 namespace hexuki {
@@ -26,12 +27,22 @@ struct TTEntry {
         : score(s), depth(d), flag(f), bestMove(m) {}
 };
 
+// One slot of the fixed-size transposition table. `key` is the full position hash,
+// stored so we can detect index collisions (different positions mapping to the same
+// slot) -- on a collision we treat it as a miss and recompute (correct, just slower).
+struct TTSlot {
+    uint64_t key;
+    TTEntry entry;
+    TTSlot() : key(0), entry() {}
+};
+
 /**
- * Transposition Table (hash table for board positions)
+ * Transposition Table: fixed-size array, eviction-on-collision -> BOUNDED memory.
+ * (The old unordered_map grew without limit and OOM'd on billion-node searches.)
  */
 class TranspositionTable {
 public:
-    TranspositionTable(size_t sizeMB = 128);  // Default: 128MB table
+    TranspositionTable(size_t sizeMB = 256);  // Default: 256MB table
 
     void store(uint64_t hash, const TTEntry& entry);
     bool probe(uint64_t hash, TTEntry& entry) const;
@@ -42,8 +53,8 @@ public:
     size_t getMisses() const { return misses; }
 
 private:
-    std::unordered_map<uint64_t, TTEntry> table;
-    size_t maxSize;
+    std::vector<TTSlot> table;   // fixed power-of-two size; index = hash & mask
+    size_t mask;
     mutable size_t hits;
     mutable size_t misses;
 };
@@ -54,7 +65,7 @@ private:
 struct SearchResult {
     Move bestMove;          // Best move found
     int score;              // Evaluation score (positive = good for current player)
-    int nodesSearched;      // Total nodes evaluated
+    long long nodesSearched;  // Total nodes evaluated (64-bit: billions on deep searches)
     double timeMs;          // Time taken in milliseconds
     int depth;              // Final depth reached
     bool timeout;           // Did search hit time limit?
@@ -76,7 +87,7 @@ struct SearchConfig {
     bool useIterativeDeepening = true;  // Start shallow, go deeper
     bool useMoveOrdering = true;    // Order moves to improve pruning
     bool useTranspositionTable = true;  // Cache positions
-    size_t ttSizeMB = 128;          // Transposition table size
+    size_t ttSizeMB = 256;          // Transposition table size (fixed; eviction on collision)
     bool verbose = false;           // Print search info
 
     SearchConfig() = default;
@@ -181,7 +192,7 @@ int alphaBeta(
     int alpha,
     int beta,
     TranspositionTable& tt,
-    int& nodesSearched,
+    long long& nodesSearched,
     std::chrono::steady_clock::time_point startTime,
     int timeLimitMs,
     KillerMoves& killers,

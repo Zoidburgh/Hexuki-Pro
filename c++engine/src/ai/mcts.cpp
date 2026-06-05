@@ -244,7 +244,7 @@ double MCTS::simulate(HexukiBitboard& board, const MCTSConfig& config) {
                 // Cache builds up across simulations → later sims are much faster
                 int searchDepth = emptyHexes;
                 int currentPlayer = board.getCurrentPlayer();
-                int nodesSearched = 0;
+                long long nodesSearched = 0;
 
                 // Create local killer/history tables for this simulation
                 minimax::KillerMoves killers;

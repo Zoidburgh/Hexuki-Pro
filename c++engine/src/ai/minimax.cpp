@@ -17,34 +17,33 @@ constexpr int TIMEOUT_CHECK_INTERVAL = 1000;  // Check time every 1000 nodes
 // ============================================================================
 
 TranspositionTable::TranspositionTable(size_t sizeMB)
-    : maxSize((sizeMB * 1024 * 1024) / sizeof(TTEntry))
-    , hits(0)
+    : hits(0)
     , misses(0) {
-    table.reserve(maxSize);  // Reserve full capacity to avoid rehashing
+    // Fixed-size array of slots, largest power of two that fits in sizeMB. Eviction on
+    // collision caps memory (the old unordered_map grew unbounded -> OOM on 12+ empties).
+    size_t want = (sizeMB * 1024 * 1024) / sizeof(TTSlot);
+    size_t n = 1024;
+    while ((n << 1) <= want) n <<= 1;
+    table.assign(n, TTSlot());
+    mask = n - 1;
 }
 
 void TranspositionTable::store(uint64_t hash, const TTEntry& entry) {
-    // Always-replace strategy with depth preference for existing entries
-    auto it = table.find(hash);
-
-    if (it != table.end()) {
-        // Entry exists - replace only if new entry is deeper or same depth
-        if (entry.depth >= it->second.depth) {
-            it->second = entry;
-        }
-        // Otherwise keep the deeper entry
-    } else {
-        // Entry doesn't exist - always add it
-        // Let the hash map grow beyond maxSize if needed
-        // This ensures deep search results are always stored
-        table[hash] = entry;
+    TTSlot& slot = table[hash & mask];
+    // Depth-preferred replacement: keep a deeper result that's already there from a
+    // DIFFERENT position; otherwise (empty slot, shallower occupant, or same position)
+    // overwrite. Any eviction is correct -- a missing entry is just recomputed.
+    if (slot.entry.depth <= entry.depth || slot.key == hash) {
+        slot.key = hash;
+        slot.entry = entry;
     }
 }
 
 bool TranspositionTable::probe(uint64_t hash, TTEntry& entry) const {
-    auto it = table.find(hash);
-    if (it != table.end()) {
-        entry = it->second;
+    const TTSlot& slot = table[hash & mask];
+    // Hit only if this slot actually holds THIS position (key match), not a collision.
+    if (slot.key == hash && slot.entry.depth > 0) {
+        entry = slot.entry;
         hits++;
         return true;
     }
@@ -53,7 +52,7 @@ bool TranspositionTable::probe(uint64_t hash, TTEntry& entry) const {
 }
 
 void TranspositionTable::clear() {
-    table.clear();
+    std::fill(table.begin(), table.end(), TTSlot());
     hits = 0;
     misses = 0;
 }
@@ -149,7 +148,7 @@ int alphaBeta(
     int alpha,
     int beta,
     TranspositionTable& tt,
-    int& nodesSearched,
+    long long& nodesSearched,
     std::chrono::steady_clock::time_point startTime,
     int timeLimitMs,
     KillerMoves& killers,
@@ -308,7 +307,7 @@ SearchResult findBestMove(HexukiBitboard& board, const SearchConfig& config) {
 
         // Make the move, search the resulting position, then unmake
         board.makeMove(moves[0]);
-        int nodesSearched = 0;
+        long long nodesSearched = 0;
         result.score = -alphaBeta(board, config.maxDepth - 1, -INF, INF, tt, nodesSearched, startTime, config.timeLimitMs, killers, history, 0);
         board.unmakeMove(moves[0]);
 
@@ -327,7 +326,7 @@ SearchResult findBestMove(HexukiBitboard& board, const SearchConfig& config) {
     if (config.useIterativeDeepening) {
         // Iterative deepening: search 1, 2, 3, ..., maxDepth
         for (int depth = 1; depth <= config.maxDepth; depth++) {
-            int nodesSearched = 0;
+            long long nodesSearched = 0;
             int alpha = -INF;
             int beta = INF;
 
@@ -391,7 +390,7 @@ SearchResult findBestMove(HexukiBitboard& board, const SearchConfig& config) {
         }
     } else {
         // Single depth search
-        int nodesSearched = 0;
+        long long nodesSearched = 0;
         int alpha = -INF;
         int beta = INF;
 
