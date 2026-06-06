@@ -14,6 +14,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const { Worker } = require('worker_threads');
 
 const PORT = parseInt(process.env.HEXUKI_PORT || '8080', 10);
 const WASM_PATH = path.join(__dirname, '..', 'bench', 'engine', 'hexuki.js');
@@ -92,6 +93,48 @@ function solve(m, position, maxMs) {
     };
 }
 
+// ---- async jobs: anytime search with cancel (no cap) ----
+// A job runs the solve in a worker thread that reports each completed depth. "best" is always
+// the deepest completed answer. Cancel terminates the worker and keeps that best-so-far.
+const jobs = new Map();
+let jobCounter = 0;
+
+function startJob(position) {
+    const id = `job${++jobCounter}`;
+    const job = { id, position, status: 'running', best: null, error: null, worker: null, startedAt: Date.now() };
+    const worker = new Worker(path.join(__dirname, 'solve-worker.cjs'), { workerData: { position } });
+    job.worker = worker;
+    worker.on('message', msg => {
+        if (msg.progress) job.best = msg.progress;
+        else if (msg.done) {
+            job.best = msg.done || job.best;
+            job.status = 'done';
+            if (job.best && job.best.complete) cachePut(position, job.best); // cache full solves only
+            console.log(`job ${id} done: score ${job.best && job.best.score} depth ${job.best && job.best.depth}`);
+        } else if (msg.error) { job.status = 'error'; job.error = msg.error; }
+    });
+    worker.on('error', e => { job.status = 'error'; job.error = String(e && e.message || e); });
+    worker.on('exit', () => { if (job.status === 'running') job.status = 'error', job.error = job.error || 'worker exited'; });
+    jobs.set(id, job);
+    return job;
+}
+
+function jobView(job) {
+    return {
+        jobId: job.id, status: job.status, position: job.position,
+        best: job.best, error: job.error, elapsedMs: Date.now() - job.startedAt,
+    };
+}
+
+function cancelJob(job) {
+    if (job.status === 'running') {
+        job.status = 'cancelled';
+        if (job.worker) job.worker.terminate(); // instant stop, even mid-depth; best-so-far is kept
+        console.log(`job ${job.id} cancelled at depth ${job.best ? job.best.depth : 0}`);
+    }
+    return jobView(job);
+}
+
 // ---- HTTP ----
 function send(res, code, obj) {
     res.writeHead(code, {
@@ -106,8 +149,35 @@ function send(res, code, obj) {
 const server = http.createServer((req, res) => {
     if (req.method === 'OPTIONS') return send(res, 204, {});
     if (req.method === 'GET' && (req.url === '/' || req.url === '/health')) {
-        return send(res, 200, { ok: true, engineLoaded: !!engine, cachedPositions: cache.size });
+        return send(res, 200, { ok: true, engineLoaded: !!engine, cachedPositions: cache.size, activeJobs: jobs.size });
     }
+
+    // --- async job API (anytime search + cancel, no cap) ---
+    // POST /jobs            { position }            -> { jobId } (or cached result immediately)
+    // GET  /jobs/<id>                               -> { status, best, ... }
+    // POST /jobs/<id>/cancel                        -> terminates, returns best-so-far
+    if (req.method === 'POST' && req.url === '/jobs') {
+        let body = '';
+        req.on('data', c => { body += c; if (body.length > 1e6) req.destroy(); });
+        req.on('end', () => {
+            let position;
+            try { position = normalizePosition(JSON.parse(body || '{}').position); }
+            catch (e) { return send(res, 400, { error: 'bad JSON: ' + e.message }); }
+            if (!position || !position.includes('|')) return send(res, 400, { error: 'missing/invalid position' });
+            if (cache.has(position)) return send(res, 200, { status: 'done', best: cache.get(position), cached: true, position });
+            const job = startJob(position);
+            return send(res, 202, { jobId: job.id, status: job.status, position });
+        });
+        return;
+    }
+    const jobMatch = req.url.match(/^\/jobs\/([^/]+)(\/cancel)?$/);
+    if (jobMatch) {
+        const job = jobs.get(jobMatch[1]);
+        if (!job) return send(res, 404, { error: 'no such job' });
+        if (req.method === 'POST' && jobMatch[2] === '/cancel') return send(res, 200, cancelJob(job));
+        if (req.method === 'GET') return send(res, 200, jobView(job));
+    }
+
     if (req.method === 'POST' && req.url === '/solve') {
         let body = '';
         req.on('data', c => { body += c; if (body.length > 1e6) req.destroy(); });

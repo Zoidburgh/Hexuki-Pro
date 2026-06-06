@@ -128,6 +128,7 @@ shipped/seeded.
 | Phase | What | Status | Notes |
 |---|---|---|---|
 | S1 | Node+WASM /solve + disk cache | **DONE** | verified: solve off-browser, 1ms cache hit, order-normalized key, /health, timeout honesty |
+| S1.5 | async jobs: anytime search + cancel (no cap) | **DONE (server side)** | worker thread per job, live depth progress, cancel terminates + returns best-completed-depth (flagged complete:false), natural completion caches. Editor wiring next. ~20-30% overhead from external ID (optimize later). |
 | S2 | worker-thread throughput pool | not started | ~7× throughput, no races |
 | S3 | native build + Lazy SMP | not started | needs MSVC Build Tools |
 | — | client solve() fallback + offline toggle | not started | keeps offline working |
