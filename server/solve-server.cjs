@@ -178,6 +178,7 @@ function startJob(position) {
 function jobView(job) {
     return {
         jobId: job.id, status: job.status, position: job.position,
+        solver: HAS_NATIVE ? 'native (multi-core)' : 'wasm worker',
         best: job.best, error: job.error, elapsedMs: Date.now() - job.startedAt,
     };
 }
@@ -221,7 +222,7 @@ const server = http.createServer((req, res) => {
             try { position = normalizePosition(JSON.parse(body || '{}').position); }
             catch (e) { return send(res, 400, { error: 'bad JSON: ' + e.message }); }
             if (!position || !position.includes('|')) return send(res, 400, { error: 'missing/invalid position' });
-            if (cache.has(position)) return send(res, 200, { status: 'done', best: cache.get(position), cached: true, position });
+            if (cache.has(position)) return send(res, 200, { status: 'done', best: cache.get(position), cached: true, position, solver: HAS_NATIVE ? 'native (multi-core)' : 'wasm worker' });
             const job = startJob(position);
             return send(res, 202, { jobId: job.id, status: job.status, position });
         });

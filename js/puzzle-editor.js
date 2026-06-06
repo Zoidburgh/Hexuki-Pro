@@ -875,7 +875,14 @@ async function serverSolve(position, onProgress) {
         body: JSON.stringify({ position }),
     }).then(r => r.json());
 
-    if (start.status === 'done' && start.best) return toWasmShape(start.best); // cache hit -> instant
+    // Tag the result with which engine actually ran, so the readout is honest (native vs WASM).
+    const shape = (best, solver) => {
+        const r = toWasmShape(best);
+        if (r) r.engineLabel = solver ? `C++ ${solver} · local server` : 'C++ · local server';
+        return r;
+    };
+
+    if (start.status === 'done' && start.best) return shape(start.best, start.solver); // cache hit -> instant
     const jobId = start.jobId;
     if (!jobId) throw new Error(start.error || 'server did not start a job');
     currentSolveJob = { jobId, cancelled: false };
@@ -884,12 +891,12 @@ async function serverSolve(position, onProgress) {
         await sleep(400);
         if (currentSolveJob && currentSolveJob.cancelled) {
             const c = await fetch(`${SOLVE_SERVER}/jobs/${jobId}/cancel`, { method: 'POST' }).then(r => r.json());
-            return toWasmShape(c.best);
+            return shape(c.best, c.solver);
         }
         const s = await fetch(`${SOLVE_SERVER}/jobs/${jobId}`).then(r => r.json());
         if (s.best && onProgress) onProgress(s.best.depth, s.best.score);
-        if (s.status === 'done') return toWasmShape(s.best);
-        if (s.status === 'cancelled') return toWasmShape(s.best);
+        if (s.status === 'done') return shape(s.best, s.solver);
+        if (s.status === 'cancelled') return shape(s.best, s.solver);
         if (s.status === 'error') throw new Error(s.error || 'server solve error');
     }
 }
@@ -1259,7 +1266,7 @@ function logMinimaxSearch(position, emptyHexes, result, game) {
 
     console.log(`%c━━━━━━━━━━ MINIMAX · ${complete ? 'perfect play' : '⚠ TIMED OUT — NOT a solve'} ━━━━━━━━━━`, hdr);
     console.log(`  to move    Player ${game.currentPlayer}   ·   ${emptyHexes} empty hexes`);
-    console.log(`  engine     C++ WASM  ·  precomputed legal-move table`);
+    console.log(`  engine     ${result.engineLabel || 'C++ WASM · precomputed legal-move table (in-browser)'}`);
     if (complete) {
         console.log(`  depth      ${result.depth}  (searched to game end)`);
         console.log(`  effort     ${nodes.toLocaleString()} nodes in ${ms.toFixed(2)} ms   ·   ${nps}`);
