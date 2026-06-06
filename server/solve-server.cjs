@@ -23,6 +23,10 @@ const NATIVE_EXE = path.join(__dirname, '..', 'native', 'hexuki-solve.exe'); // 
 const CACHE_PATH = path.join(__dirname, 'cache.jsonl');
 const DEFAULT_MAX_MS = 600000; // 10 min cap per solve
 const HAS_NATIVE = fs.existsSync(NATIVE_EXE);
+// Threads for the native solver. DEFAULT 1 (single-threaded = correct). Multi-threaded Lazy SMP
+// still has a residual race that occasionally returns a WRONG value, so it must NOT be the
+// default. Set HEXUKI_THREADS>1 only for experiments while that's being fixed.
+const SOLVE_THREADS = Math.max(1, parseInt(process.env.HEXUKI_THREADS || '1', 10));
 
 // ---- position normalization: one canonical cache key regardless of input ordering ----
 // "h6:7,h4:3|p1:6,2,5|p2:..|turn:1" and "h4:3,h6:7|p1:2,5,6|p2:..|turn:1" -> same key.
@@ -118,7 +122,7 @@ function startJob(position) {
         // Native multi-core solve: spawn the exe (uses all hardware threads, Lazy SMP), stream
         // @PROGRESS, cancel = kill the process. Same anytime-search contract as the WASM worker.
         job.kind = 'native';
-        const child = spawn(NATIVE_EXE, [position, '0', '2147483647', '--stream']);
+        const child = spawn(NATIVE_EXE, [position, '0', '2147483647', '--threads', String(SOLVE_THREADS), '--stream']);
         job.proc = child;
         let buf = '';
         child.stdout.on('data', d => {
@@ -178,7 +182,7 @@ function startJob(position) {
 function jobView(job) {
     return {
         jobId: job.id, status: job.status, position: job.position,
-        solver: HAS_NATIVE ? 'native (multi-core)' : 'wasm worker',
+        solver: HAS_NATIVE ? (SOLVE_THREADS > 1 ? 'native (multi-core)' : 'native (single-thread)') : 'wasm worker',
         best: job.best, error: job.error, elapsedMs: Date.now() - job.startedAt,
     };
 }

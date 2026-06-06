@@ -250,15 +250,18 @@ int alphaBeta(
     if (tt.probe(hash, ttEntry)) {
         ttHit = true;
         if (ttEntry.depth >= depth) {
+            // Use the entry ONLY for a definitive cutoff (or move ordering below) -- do NOT
+            // narrow alpha/beta. Narrowing alpha from a LOWER_BOUND above alphaOrig lets a
+            // result in (alphaOrig, alpha] be mis-flagged EXACT (a latent bug that broke PVS
+            // and corrupts Lazy SMP, where helper threads fill the shared TT with bounds from
+            // different windows). Not narrowing keeps alphaOrig == the real window edge, so the
+            // stored flag is always correct.
             if (ttEntry.flag == TTEntry::EXACT) {
                 return ttEntry.score;
-            } else if (ttEntry.flag == TTEntry::LOWER_BOUND) {
-                alpha = std::max(alpha, ttEntry.score);
-            } else if (ttEntry.flag == TTEntry::UPPER_BOUND) {
-                beta = std::min(beta, ttEntry.score);
-            }
-            if (alpha >= beta) {
-                return ttEntry.score;
+            } else if (ttEntry.flag == TTEntry::LOWER_BOUND && ttEntry.score >= beta) {
+                return ttEntry.score;   // value >= score >= beta -> fail-high cutoff
+            } else if (ttEntry.flag == TTEntry::UPPER_BOUND && ttEntry.score <= alpha) {
+                return ttEntry.score;   // value <= score <= alpha -> fail-low cutoff
             }
         }
     }
@@ -414,10 +417,13 @@ static SearchResult lazyWorker(HexukiBitboard board, const SearchConfig& config,
 
 static SearchResult findBestMoveLazySMP(HexukiBitboard& board, const SearchConfig& config) {
     auto startTime = std::chrono::steady_clock::now();
-    // Build the global legal-move table NOW, single-threaded, before any worker touches it --
-    // otherwise N threads race to build the same global on first getValidMoves(). After this it
-    // is read-only, so concurrent reads are safe.
+    // Build BOTH lazily-initialized globals NOW, single-threaded, before any worker touches them.
+    // Otherwise N threads race to build them on first use: the legal-move table, and -- the one
+    // that caused wrong values ~20% of the time -- the Zobrist hash table. If threads race the
+    // Zobrist init they compute INCONSISTENT hashes, which poisons the shared TT (entries keyed
+    // wrong) and yields wrong results. After this both are read-only -> concurrent reads are safe.
     HexukiBitboard::ensureLegalTable();
+    Zobrist::initialize();
 
     TranspositionTable tt(config.ttSizeMB);     // shared across all threads
     std::atomic<bool> stop{false};
