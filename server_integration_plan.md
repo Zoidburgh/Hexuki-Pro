@@ -127,7 +127,7 @@ shipped/seeded.
 
 | Phase | What | Status | Notes |
 |---|---|---|---|
-| S1 | Node+WASM /solve + disk cache | not started | start here; no installs |
+| S1 | Node+WASM /solve + disk cache | **DONE** | verified: solve off-browser, 1ms cache hit, order-normalized key, /health, timeout honesty |
 | S2 | worker-thread throughput pool | not started | ~7× throughput, no races |
 | S3 | native build + Lazy SMP | not started | needs MSVC Build Tools |
 | — | client solve() fallback + offline toggle | not started | keeps offline working |
