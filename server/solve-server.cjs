@@ -23,10 +23,10 @@ const NATIVE_EXE = path.join(__dirname, '..', 'native', 'hexuki-solve.exe'); // 
 const CACHE_PATH = path.join(__dirname, 'cache.jsonl');
 const DEFAULT_MAX_MS = 600000; // 10 min cap per solve
 const HAS_NATIVE = fs.existsSync(NATIVE_EXE);
-// Threads for the native solver. DEFAULT 1 (single-threaded = correct). Multi-threaded Lazy SMP
-// still has a residual race that occasionally returns a WRONG value, so it must NOT be the
-// default. Set HEXUKI_THREADS>1 only for experiments while that's being fixed.
-const SOLVE_THREADS = Math.max(1, parseInt(process.env.HEXUKI_THREADS || '1', 10));
+// Native root-split parallel workers. 0 = all hardware cores (default). Root splitting is correct
+// BY CONSTRUCTION and verified by bench/difftest-threads.cjs (threaded value == single-threaded,
+// and the reported move is optimal). Set HEXUKI_THREADS=1 to force single-threaded, or =N to cap.
+const SOLVE_THREADS = Math.max(0, parseInt(process.env.HEXUKI_THREADS || '0', 10));
 
 // ---- position normalization: one canonical cache key regardless of input ordering ----
 // "h6:7,h4:3|p1:6,2,5|p2:..|turn:1" and "h4:3,h6:7|p1:2,5,6|p2:..|turn:1" -> same key.
@@ -182,7 +182,7 @@ function startJob(position) {
 function jobView(job) {
     return {
         jobId: job.id, status: job.status, position: job.position,
-        solver: HAS_NATIVE ? (SOLVE_THREADS > 1 ? 'native (multi-core)' : 'native (single-thread)') : 'wasm worker',
+        solver: HAS_NATIVE ? (SOLVE_THREADS === 1 ? 'native (single-thread)' : 'native (multi-core)') : 'wasm worker',
         best: job.best, error: job.error, elapsedMs: Date.now() - job.startedAt,
     };
 }
@@ -277,7 +277,7 @@ loadCache();
 getEngine().then(() => {
     server.listen(PORT, () => {
         console.log(`Hexuki solve server: http://localhost:${PORT}`);
-        console.log(`  solver: ${HAS_NATIVE ? 'NATIVE (multi-core Lazy SMP)' : 'WASM (single-thread; build native/ for multi-core)'}`);
+        console.log(`  solver: ${HAS_NATIVE ? `NATIVE root-split (${SOLVE_THREADS === 0 ? 'all cores' : SOLVE_THREADS + ' thread(s)'})` : 'WASM (single-thread)'}`);
         console.log(`  POST /jobs    {"position":"..."}   (anytime search + cancel; used by the editor)`);
         console.log(`  POST /solve   {"position":"...", "maxMs":600000}   (synchronous)`);
         console.log(`  GET  /health`);

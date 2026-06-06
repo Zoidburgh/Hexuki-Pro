@@ -3,6 +3,12 @@
 #include <algorithm>
 #include <iostream>
 #include <limits>
+#ifdef HEXUKI_THREADS
+#include <thread>
+#include <atomic>
+#include <vector>
+#include <mutex>
+#endif
 
 namespace hexuki {
 namespace minimax {
@@ -290,11 +296,92 @@ int quiescence(
     return standPat;
 }
 
+#ifdef HEXUKI_THREADS
+// ============================================================================
+// Root-split parallel search (native build only)
+// ============================================================================
+// Correct BY CONSTRUCTION: it is exactly the serial root move loop, distributed across threads.
+// Each worker fully searches a SUBSET of the root moves with pure alpha-beta (the shared TT is
+// ordering-only, so it can never corrupt a value -- a race just yields a worse ordering hint).
+// A shared atomic alpha carries the best-so-far across threads for cross-move pruning: searching
+// a move against a higher alpha only prunes moves that are provably <= the global best, so the
+// winning move is still searched exactly. The answer is the max over all workers.
+static SearchResult findBestMoveRootSplit(HexukiBitboard& board, const SearchConfig& config) {
+    // Build BOTH lazily-initialized globals now, single-threaded, before any worker touches them.
+    HexukiBitboard::ensureLegalTable();
+    Zobrist::initialize();
+
+    g_ttEnabled = config.useTranspositionTable;
+    auto startTime = std::chrono::steady_clock::now();
+
+    std::vector<Move> rootMoves = board.getValidMoves();
+    SearchResult result;
+    if (rootMoves.empty()) { result.score = evaluate(board); result.bestMove = Move(); return result; }
+
+    TranspositionTable tt(config.ttSizeMB);     // shared; ordering-only -> races are benign
+    std::atomic<int> globalAlpha{ -INF };        // best score found so far across all workers
+    const int N = std::max(1, std::min(config.threads, (int)rootMoves.size()));
+    const int searchDepth = config.maxDepth - 1;
+
+    std::vector<int>  bestScore(N, -INF);
+    std::vector<Move> bestMove(N);
+
+    auto worker = [&](int t) {
+        HexukiBitboard b = board;                // own copy
+        KillerMoves killers;
+        HistoryTable history;
+        long long nodes = 0;
+        int localBest = -INF;
+        Move localMove = rootMoves[t % rootMoves.size()];
+        for (int mi = t; mi < (int)rootMoves.size(); mi += N) {
+            const Move& move = rootMoves[mi];
+            // Prune against the best found anywhere so far (valid: a higher alpha only rejects
+            // moves <= the global best; a better move still exceeds it and is searched exactly).
+            int alpha = std::max(localBest, globalAlpha.load(std::memory_order_relaxed));
+            b.makeMove(move);
+            int score = -alphaBeta(b, searchDepth, -INF, -alpha, tt, nodes, startTime,
+                                   config.timeLimitMs, killers, history, 1);
+            b.unmakeMove(move);
+            // Record ONLY a real improvement over the global best -- i.e. score strictly exceeds
+            // the alpha we searched against. Such a move was searched with an open upper window,
+            // so its score is EXACT, and it's the new global maximum. A move with score <= alpha
+            // was pruned/bounded (not better than the best found elsewhere) -> never the answer.
+            if (score > alpha) {
+                localBest = score; localMove = move;
+                int g = globalAlpha.load(std::memory_order_relaxed);
+                while (score > g && !globalAlpha.compare_exchange_weak(g, score, std::memory_order_relaxed)) {}
+            }
+        }
+        bestScore[t] = localBest;
+        bestMove[t]  = localMove;
+    };
+
+    std::vector<std::thread> pool;
+    pool.reserve(N - 1);
+    for (int t = 1; t < N; t++) pool.emplace_back(worker, t);
+    worker(0);                                   // this thread does worker 0
+    for (auto& th : pool) th.join();
+
+    int best = -INF; Move move = rootMoves[0];
+    for (int t = 0; t < N; t++) if (bestScore[t] > best) { best = bestScore[t]; move = bestMove[t]; }
+
+    result.score = best;
+    result.bestMove = move;
+    result.depth = config.maxDepth;
+    result.timeMs = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - startTime).count();
+    return result;
+}
+#endif // HEXUKI_THREADS
+
 // ============================================================================
 // Main Search Function
 // ============================================================================
 
 SearchResult findBestMove(HexukiBitboard& board, const SearchConfig& config) {
+#ifdef HEXUKI_THREADS
+    if (config.threads > 1) return findBestMoveRootSplit(board, config);
+#endif
     SearchResult result;
 
     g_ttEnabled = config.useTranspositionTable;  // false => pure alpha-beta ground-truth oracle

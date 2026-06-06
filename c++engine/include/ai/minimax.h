@@ -92,6 +92,10 @@ struct SearchConfig {
     bool streamProgress = false;    // Emit a machine-readable "@PROGRESS" line per completed
                                     // ID depth (for the server's anytime search: progress +
                                     // cancel with NO re-search overhead). Off by default.
+    int threads = 1;                // Root-split parallel workers (native build only, >1). Each
+                                    // worker fully searches a subset of root moves with pure
+                                    // alpha-beta; values are correct by construction. Ignored by
+                                    // the WASM build (no -DHEXUKI_THREADS).
 
     SearchConfig() = default;
 };
