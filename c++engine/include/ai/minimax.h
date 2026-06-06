@@ -6,8 +6,6 @@
 #include <vector>
 #include <cstdint>
 #include <chrono>
-#include <atomic>
-#include <memory>
 
 namespace hexuki {
 namespace minimax {
@@ -29,35 +27,14 @@ struct TTEntry {
         : score(s), depth(d), flag(f), bestMove(m) {}
 };
 
-// One slot of the fixed-size transposition table, LOCKLESS (Hyatt XOR) so the table can be
-// shared across Lazy-SMP threads safely. The entry is packed into a single 64-bit word; the
-// key word holds hash ^ data. A probe reconstructs the hash as keyWord ^ dataWord -- if a
-// concurrent write tore the (key, data) pair, that check fails and we treat it as a miss
-// (recompute -> same value -> correct). Aligned 64-bit atomic loads/stores never tear on
-// their own, so only the PAIR can be inconsistent, which the XOR catches. dataWord == 0 means
-// empty (a real entry always has depth >= 1, so it's never all-zero).
-// The TT slot differs by build, because a thread-safe (lockless) slot costs ~2x per node and
-// ONLY the native multi-threaded build needs it. The single-threaded WASM/default build keeps
-// the simple fast slot (no regression).
-#ifdef HEXUKI_THREADS
-// Native multi-threaded: lockless packed slot. The entry is packed into one 64-bit word and the
-// key word holds hash ^ data. A probe reconstructs hash as keyWord ^ dataWord; a concurrent
-// write that tears the (key,data) PAIR fails that check -> miss -> recompute -> correct. Aligned
-// 64-bit loads/stores are atomic in hardware (x86-64/ARM64), so neither word tears on its own.
-struct TTSlot {
-    uint64_t keyWord;   // hash ^ dataWord
-    uint64_t dataWord;  // packed TTEntry (0 = empty slot)
-    TTSlot() : keyWord(0), dataWord(0) {}
-};
-#else
-// Single-threaded (WASM / default): simple fast slot, no packing overhead. `key` is the full
-// position hash; a collision (different position, same index) just probes as a miss.
+// One slot of the fixed-size transposition table. `key` is the full position hash,
+// stored so we can detect index collisions (different positions mapping to the same
+// slot) -- on a collision we treat it as a miss and recompute (correct, just slower).
 struct TTSlot {
     uint64_t key;
     TTEntry entry;
     TTSlot() : key(0), entry() {}
 };
-#endif
 
 /**
  * Transposition Table: fixed-size array, eviction-on-collision -> BOUNDED memory.
@@ -71,14 +48,15 @@ public:
     bool probe(uint64_t hash, TTEntry& entry) const;
     void clear();
 
-    size_t getSize() const { return tableSize; }
-    size_t getHits() const { return 0; }    // stats disabled: shared counters would contend across threads
-    size_t getMisses() const { return 0; }
+    size_t getSize() const { return table.size(); }
+    size_t getHits() const { return hits; }
+    size_t getMisses() const { return misses; }
 
 private:
-    std::unique_ptr<TTSlot[]> table;  // fixed power-of-two size; index = hash & mask
-    size_t tableSize = 0;
-    size_t mask = 0;
+    std::vector<TTSlot> table;   // fixed power-of-two size; index = hash & mask
+    size_t mask;
+    mutable size_t hits;
+    mutable size_t misses;
 };
 
 /**
@@ -114,9 +92,6 @@ struct SearchConfig {
     bool streamProgress = false;    // Emit a machine-readable "@PROGRESS" line per completed
                                     // ID depth (for the server's anytime search: progress +
                                     // cancel with NO re-search overhead). Off by default.
-    int threads = 1;                // Lazy SMP worker count (native build only). 1 = the normal
-                                    // single-threaded search. >1 shares the lockless TT across
-                                    // threads. Ignored by the WASM build (no -DHEXUKI_THREADS).
 
     SearchConfig() = default;
 };
@@ -225,8 +200,7 @@ int alphaBeta(
     int timeLimitMs,
     KillerMoves& killers,
     HistoryTable& history,
-    int ply,
-    std::atomic<bool>* stop = nullptr  // Lazy SMP: when set by another thread, bail out early
+    int ply
 );
 
 /**

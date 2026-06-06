@@ -12,7 +12,7 @@ New-Item -ItemType Directory -Force $out | Out-Null
 
 Push-Location $engine
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
-& $gpp -O3 -DNDEBUG -DHEXUKI_THREADS -march=native -std=c++17 -flto -pthread -static -static-libgcc -static-libstdc++ -I include `
+& $gpp -O3 -DNDEBUG -march=native -std=c++17 -flto -pthread -static -static-libgcc -static-libstdc++ -I include `
     src/core/bitboard.cpp src/core/move.cpp src/core/zobrist.cpp src/ai/minimax.cpp src/native_solve.cpp `
     -o (Join-Path $out 'hexuki-solve.exe')
 $code = $LASTEXITCODE

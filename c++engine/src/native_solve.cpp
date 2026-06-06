@@ -14,7 +14,6 @@
 #include <string>
 #include <cstring>
 #include <cstdlib>
-#include <thread>
 #include <algorithm>
 
 using namespace hexuki;
@@ -27,11 +26,10 @@ int main(int argc, char** argv) {
     const std::string position = argv[1];
     bool stream = false;
     int depthArg = -1;
-    int threadsArg = -1;
     long long timeoutMs = 2147483647LL; // ~no cap
     for (int i = 2; i < argc; i++) {
         if (std::strcmp(argv[i], "--stream") == 0) stream = true;
-        else if (std::strcmp(argv[i], "--threads") == 0 && i + 1 < argc) threadsArg = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--threads") == 0 && i + 1 < argc) { ++i; /* parsed+ignored: engine is single-threaded (Lazy SMP reverted; see threading plan) */ }
         else if (depthArg < 0) depthArg = std::atoi(argv[i]);
         else timeoutMs = std::atoll(argv[i]);
     }
@@ -47,8 +45,6 @@ int main(int argc, char** argv) {
     config.maxDepth = depth;
     config.timeLimitMs = (int)std::min<long long>(timeoutMs, 2147483647LL);
     config.streamProgress = stream;
-    // Default to all hardware threads (Lazy SMP); --threads N overrides; 1 = single-threaded.
-    config.threads = (threadsArg > 0) ? threadsArg : std::max(1u, std::thread::hardware_concurrency());
 
     auto r = minimax::findBestMove(board, config);
 

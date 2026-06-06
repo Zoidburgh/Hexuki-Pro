@@ -3,10 +3,6 @@
 #include <algorithm>
 #include <iostream>
 #include <limits>
-#ifdef HEXUKI_THREADS
-#include <thread>
-#include <vector>
-#endif
 
 namespace hexuki {
 namespace minimax {
@@ -29,76 +25,29 @@ static thread_local std::vector<Move> s_moveStack[MOVE_STACK_SIZE];
 // Transposition Table Implementation
 // ============================================================================
 
-TranspositionTable::TranspositionTable(size_t sizeMB) {
-    // Largest power-of-two slot count that fits in sizeMB.
+// Differential-testing switch: when false the TT probes always miss and stores are dropped,
+// so the search is pure alpha-beta -- a GROUND-TRUTH oracle that cannot have any TT bug. Set
+// from config.useTranspositionTable at the start of findBestMove.
+static bool g_ttEnabled = true;
+
+TranspositionTable::TranspositionTable(size_t sizeMB)
+    : hits(0)
+    , misses(0) {
+    // Fixed-size array of slots, largest power of two that fits in sizeMB. Eviction on
+    // collision caps memory (the old unordered_map grew unbounded -> OOM on 12+ empties).
     size_t want = (sizeMB * 1024 * 1024) / sizeof(TTSlot);
     size_t n = 1024;
     while ((n << 1) <= want) n <<= 1;
-    table = std::make_unique<TTSlot[]>(n);  // all slots default to 0 (empty)
-    tableSize = n;
+    table.assign(n, TTSlot());
     mask = n - 1;
 }
 
-#ifdef HEXUKI_THREADS
-// ---- Lockless packed TT (native multi-threaded): pack TTEntry into one 64-bit word ----
-//  bits  [0..23]  score + TT_SCORE_OFFSET  (24 bits; score is within [-INF, INF] = +/-1e6)
-//  bits [24..29]  depth                    (6 bits; 0 = empty)
-//  bits [30..31]  flag                     (2 bits)
-//  bits [32..36]  hexId + 1                (5 bits; default move hexId -1 -> 0)
-//  bits [37..40]  tileValue                (4 bits)
-namespace {
-    constexpr int64_t TT_SCORE_OFFSET = 1 << 23;  // 8,388,608 > |score|, so score+OFFSET >= 0
-    inline uint64_t packTT(const TTEntry& e) {
-        return ((uint64_t)(int64_t)(e.score + TT_SCORE_OFFSET) & 0xFFFFFFull)
-             | ((uint64_t)(e.depth & 0x3F) << 24)
-             | ((uint64_t)((int)e.flag & 0x3) << 30)
-             | ((uint64_t)((e.bestMove.hexId + 1) & 0x1F) << 32)
-             | ((uint64_t)(e.bestMove.tileValue & 0xF) << 37);
-    }
-    inline void unpackTT(uint64_t w, TTEntry& e) {
-        e.score = (int)((int64_t)(w & 0xFFFFFFull) - TT_SCORE_OFFSET);
-        e.depth = (int)((w >> 24) & 0x3F);
-        e.flag  = (TTEntry::Flag)((w >> 30) & 0x3);
-        e.bestMove.hexId = (int)((w >> 32) & 0x1F) - 1;
-        e.bestMove.tileValue = (int)((w >> 37) & 0xF);
-    }
-    inline int unpackTTDepth(uint64_t w) { return (int)((w >> 24) & 0x3F); }
-}
-
 void TranspositionTable::store(uint64_t hash, const TTEntry& entry) {
+    if (!g_ttEnabled) return;
     TTSlot& slot = table[hash & mask];
-    const uint64_t curData = slot.dataWord;   // racy read OK: only the replacement DECISION uses it
-    const uint64_t curKey  = slot.keyWord;
-    const bool empty   = (curData == 0 && curKey == 0);
-    const bool samePos = ((curKey ^ curData) == hash);
-    if (empty || samePos || unpackTTDepth(curData) <= entry.depth) {  // depth-preferred replacement
-        const uint64_t data = packTT(entry);
-        slot.dataWord = data;
-        slot.keyWord  = hash ^ data;   // key ^ data == hash iff a reader sees this consistent pair
-    }
-}
-
-bool TranspositionTable::probe(uint64_t hash, TTEntry& entry) const {
-    const TTSlot& slot = table[hash & mask];
-    const uint64_t key  = slot.keyWord;
-    const uint64_t data = slot.dataWord;
-    if ((key ^ data) == hash && unpackTTDepth(data) > 0) {  // consistent pair + real entry
-        unpackTT(data, entry);
-        return true;
-    }
-    return false;
-}
-
-void TranspositionTable::clear() {
-    for (size_t i = 0; i < tableSize; i++) { table[i].keyWord = 0; table[i].dataWord = 0; }
-}
-
-#else  // single-threaded (WASM / default): simple fast slot, no packing
-
-void TranspositionTable::store(uint64_t hash, const TTEntry& entry) {
-    TTSlot& slot = table[hash & mask];
-    // Depth-preferred replacement: keep a deeper result from a different position; otherwise
-    // (empty, shallower, or same position) overwrite. Any eviction is correct (recompute).
+    // Depth-preferred replacement: keep a deeper result that's already there from a
+    // DIFFERENT position; otherwise (empty slot, shallower occupant, or same position)
+    // overwrite. Any eviction is correct -- a missing entry is just recomputed.
     if (slot.entry.depth <= entry.depth || slot.key == hash) {
         slot.key = hash;
         slot.entry = entry;
@@ -106,19 +55,23 @@ void TranspositionTable::store(uint64_t hash, const TTEntry& entry) {
 }
 
 bool TranspositionTable::probe(uint64_t hash, TTEntry& entry) const {
+    if (!g_ttEnabled) { misses++; return false; }
     const TTSlot& slot = table[hash & mask];
-    if (slot.key == hash && slot.entry.depth > 0) {  // this exact position, real entry
+    // Hit only if this slot actually holds THIS position (key match), not a collision.
+    if (slot.key == hash && slot.entry.depth > 0) {
         entry = slot.entry;
+        hits++;
         return true;
     }
+    misses++;
     return false;
 }
 
 void TranspositionTable::clear() {
-    for (size_t i = 0; i < tableSize; i++) { table[i].key = 0; table[i].entry = TTEntry(); }
+    std::fill(table.begin(), table.end(), TTSlot());
+    hits = 0;
+    misses = 0;
 }
-
-#endif // HEXUKI_THREADS
 
 // ============================================================================
 // Evaluation Function
@@ -216,16 +169,12 @@ int alphaBeta(
     int timeLimitMs,
     KillerMoves& killers,
     HistoryTable& history,
-    int ply,
-    std::atomic<bool>* stop
+    int ply
 ) {
     nodesSearched++;
 
-    // Check timeout / Lazy-SMP stop periodically
+    // Check timeout periodically
     if (nodesSearched % TIMEOUT_CHECK_INTERVAL == 0) {
-        if (stop && stop->load(std::memory_order_relaxed)) {
-            return 0;  // another Lazy-SMP thread finished -> abandon this (discarded) search
-        }
         auto now = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count();
         if (elapsed >= timeLimitMs) {
@@ -249,21 +198,13 @@ int alphaBeta(
 
     if (tt.probe(hash, ttEntry)) {
         ttHit = true;
-        if (ttEntry.depth >= depth) {
-            // Use the entry ONLY for a definitive cutoff (or move ordering below) -- do NOT
-            // narrow alpha/beta. Narrowing alpha from a LOWER_BOUND above alphaOrig lets a
-            // result in (alphaOrig, alpha] be mis-flagged EXACT (a latent bug that broke PVS
-            // and corrupts Lazy SMP, where helper threads fill the shared TT with bounds from
-            // different windows). Not narrowing keeps alphaOrig == the real window edge, so the
-            // stored flag is always correct.
-            if (ttEntry.flag == TTEntry::EXACT) {
-                return ttEntry.score;
-            } else if (ttEntry.flag == TTEntry::LOWER_BOUND && ttEntry.score >= beta) {
-                return ttEntry.score;   // value >= score >= beta -> fail-high cutoff
-            } else if (ttEntry.flag == TTEntry::UPPER_BOUND && ttEntry.score <= alpha) {
-                return ttEntry.score;   // value <= score <= alpha -> fail-low cutoff
-            }
-        }
+        // TT is used for MOVE ORDERING ONLY (ttEntry.bestMove, via orderMoves below) -- it does
+        // NOT return stored values or take bound cutoffs. Returning values introduced a subtle
+        // wrong-value bug (stored EXACT entries came back wrong on ~6% of positions; differential
+        // testing vs pure alpha-beta caught it). Ordering can't change the minimax value, so this
+        // is correct BY CONSTRUCTION, at some speed cost. Recovering the value-TT speedup safely
+        // is future work (see the diff-test gate). g_ttEnabled still gates the whole TT for the
+        // ground-truth oracle (minimaxFindBestMoveNoTT).
     }
 
     // Get and order moves. Fill a per-ply reusable buffer instead of allocating a fresh
@@ -289,7 +230,7 @@ int alphaBeta(
     for (const auto& move : moves) {
         board.makeMove(move);
         int score = -alphaBeta(board, depth - 1, -beta, -alpha, tt, nodesSearched, startTime, timeLimitMs,
-                              killers, history, ply + 1, stop);
+                              killers, history, ply + 1);
         board.unmakeMove(move);
 
         if (score > bestScore) {
@@ -349,114 +290,14 @@ int quiescence(
     return standPat;
 }
 
-#ifdef HEXUKI_THREADS
-// ============================================================================
-// Lazy SMP (native multi-threaded search)
-// ============================================================================
-// N threads each run iterative deepening on their OWN copy of the board, sharing the lockless
-// transposition table. Thread 0 is authoritative (runs to completion, emits @PROGRESS); helper
-// threads start from a rotated root-move order so they seed different subtrees into the shared
-// TT, then bail the moment thread 0 finishes. The exact value is unchanged -- only wall time
-// drops. Node counts vary run-to-run (thread timing); that's expected for parallel search.
-static SearchResult lazyWorker(HexukiBitboard board, const SearchConfig& config,
-                               TranspositionTable& tt, std::atomic<bool>& stop,
-                               int threadId, bool isMain,
-                               std::chrono::steady_clock::time_point startTime) {
-    SearchResult result;
-    std::vector<Move> moves = board.getValidMoves();
-    if (moves.empty()) { result.score = evaluate(board); return result; }
-
-    KillerMoves killers;
-    HistoryTable history;
-    Move bestMove = moves[0];
-    int bestScore = -INF;
-
-    if (threadId > 0 && moves.size() > 1) {
-        std::rotate(moves.begin(), moves.begin() + (threadId % (int)moves.size()), moves.end());
-    }
-
-    for (int depth = 1; depth <= config.maxDepth; depth++) {
-        if (!isMain && stop.load(std::memory_order_relaxed)) break;
-
-        long long nodes = 0;
-        int alpha = -INF, beta = INF;
-        Move curBest = moves[0];
-        int curScore = -INF;
-        if (depth > 1) orderMoves(moves, nullptr, killers, history, 0);
-
-        for (const auto& move : moves) {
-            if (!isMain && stop.load(std::memory_order_relaxed)) break;
-            board.makeMove(move);
-            int score = -alphaBeta(board, depth - 1, -beta, -alpha, tt, nodes, startTime,
-                                   config.timeLimitMs, killers, history, 1, &stop);
-            board.unmakeMove(move);
-            if (score > curScore) { curScore = score; curBest = move; if (score > alpha) alpha = score; }
-        }
-
-        if (!isMain && stop.load(std::memory_order_relaxed)) break; // stopped mid-depth -> discard it
-
-        bestMove = curBest;
-        bestScore = curScore;
-        result.depth = depth;
-        result.nodesSearched += nodes;
-
-        if (isMain && config.streamProgress) {
-            long long elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now() - startTime).count();
-            std::cout << "@PROGRESS " << depth << " " << bestScore << " "
-                      << bestMove.hexId << " " << bestMove.tileValue << " "
-                      << result.nodesSearched << " " << elapsed << std::endl;
-        }
-        if (std::abs(bestScore) > MATE_SCORE - 100) break;
-    }
-
-    result.bestMove = bestMove;
-    result.score = bestScore;
-    return result;
-}
-
-static SearchResult findBestMoveLazySMP(HexukiBitboard& board, const SearchConfig& config) {
-    auto startTime = std::chrono::steady_clock::now();
-    // Build BOTH lazily-initialized globals NOW, single-threaded, before any worker touches them.
-    // Otherwise N threads race to build them on first use: the legal-move table, and -- the one
-    // that caused wrong values ~20% of the time -- the Zobrist hash table. If threads race the
-    // Zobrist init they compute INCONSISTENT hashes, which poisons the shared TT (entries keyed
-    // wrong) and yields wrong results. After this both are read-only -> concurrent reads are safe.
-    HexukiBitboard::ensureLegalTable();
-    Zobrist::initialize();
-
-    TranspositionTable tt(config.ttSizeMB);     // shared across all threads
-    std::atomic<bool> stop{false};
-    const int N = std::max(1, config.threads);
-
-    std::vector<std::thread> helpers;
-    helpers.reserve(N - 1);
-    for (int t = 1; t < N; t++) {
-        helpers.emplace_back([&board, &config, &tt, &stop, t, startTime]() {
-            lazyWorker(board, config, tt, stop, t, /*isMain=*/false, startTime);
-        });
-    }
-
-    SearchResult result = lazyWorker(board, config, tt, stop, 0, /*isMain=*/true, startTime);
-
-    stop.store(true, std::memory_order_relaxed);  // tell helpers to stop
-    for (auto& h : helpers) h.join();
-
-    result.timeMs = std::chrono::duration<double, std::milli>(
-        std::chrono::steady_clock::now() - startTime).count();
-    return result;
-}
-#endif // HEXUKI_THREADS
-
 // ============================================================================
 // Main Search Function
 // ============================================================================
 
 SearchResult findBestMove(HexukiBitboard& board, const SearchConfig& config) {
-#ifdef HEXUKI_THREADS
-    if (config.threads > 1) return findBestMoveLazySMP(board, config);
-#endif
     SearchResult result;
+
+    g_ttEnabled = config.useTranspositionTable;  // false => pure alpha-beta ground-truth oracle
 
     auto startTime = std::chrono::steady_clock::now();
 

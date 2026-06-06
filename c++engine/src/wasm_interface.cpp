@@ -257,6 +257,26 @@ extern "C" const char* wasmMinimaxFindBestMoveStream(int depth, int timeLimitMs)
     return result.c_str();
 }
 
+// Ground-truth oracle: solve with the transposition table DISABLED (pure alpha-beta).
+// Used only by differential testing to find positions where the TT-enabled search is wrong.
+extern "C" const char* wasmMinimaxFindBestMoveNoTT(int depth, int timeLimitMs) {
+    static std::string result;
+    if (!g_board) { result = "{\"error\":\"Not initialized\"}"; return result.c_str(); }
+    minimax::SearchConfig config;
+    config.maxDepth = depth;
+    config.timeLimitMs = timeLimitMs;
+    config.useTranspositionTable = false;   // pure alpha-beta -> cannot have a TT bug
+    auto searchResult = minimax::findBestMove(*g_board, config);
+    result = "{";
+    result += "\"hexId\":" + std::to_string(searchResult.bestMove.hexId) + ",";
+    result += "\"tileValue\":" + std::to_string(searchResult.bestMove.tileValue) + ",";
+    result += "\"score\":" + std::to_string(searchResult.score) + ",";
+    result += "\"depth\":" + std::to_string(searchResult.depth) + ",";
+    result += "\"nodes\":" + std::to_string(searchResult.nodesSearched);
+    result += "}";
+    return result.c_str();
+}
+
 // ============================================================================
 // Cleanup
 // ============================================================================
@@ -298,6 +318,10 @@ std::string wasmMinimaxFindBestMoveStreamStr(int depth, int timeLimitMs) {
     return std::string(wasmMinimaxFindBestMoveStream(depth, timeLimitMs));
 }
 
+std::string wasmMinimaxFindBestMoveNoTTStr(int depth, int timeLimitMs) {
+    return std::string(wasmMinimaxFindBestMoveNoTT(depth, timeLimitMs));
+}
+
 // ============================================================================
 // Emscripten Bindings (using std::string - no raw pointers)
 // ============================================================================
@@ -319,5 +343,6 @@ EMSCRIPTEN_BINDINGS(hexuki_module) {
     function("mctsFindBestMove", &wasmMCTSFindBestMoveStr);
     function("minimaxFindBestMove", &wasmMinimaxFindBestMoveStr);
     function("minimaxFindBestMoveStream", &wasmMinimaxFindBestMoveStreamStr);
+    function("minimaxFindBestMoveNoTT", &wasmMinimaxFindBestMoveNoTTStr);
     function("cleanup", &wasmCleanup);
 }
