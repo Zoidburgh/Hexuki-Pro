@@ -46,6 +46,30 @@ static bool g_useValueTT = false;
 static bool g_verifyExact = false;
 static bool g_firstBadLogged = false;
 
+// Pack a TTEntry into a single 64-bit word for the lockless XOR-checksum slot. Stored entries
+// always have depth >= 1 (stores happen at depth>=1 nodes), so the depth bits make `packed` nonzero
+// -> data==0 unambiguously means "empty slot". Layout: score:32 | depth:5 | flag:2 | hexId:5 |
+// tileValue:4 (= 48 bits; hexId -1 sentinel maps to 31 since real hexIds are 0..18).
+static inline uint64_t packEntry(const TTEntry& e) {
+    uint64_t p = (uint32_t)e.score;                           // bits 0..31 (two's-complement int32)
+    p |= (uint64_t)(e.depth & 0x1F) << 32;                    // bits 32..36
+    p |= (uint64_t)((int)e.flag & 0x3) << 37;                 // bits 37..38
+    uint64_t hx = (e.bestMove.hexId < 0) ? 31u : (uint64_t)(e.bestMove.hexId & 0x1F);
+    p |= hx << 39;                                            // bits 39..43
+    p |= (uint64_t)(e.bestMove.tileValue & 0xF) << 44;        // bits 44..47
+    return p;
+}
+static inline TTEntry unpackEntry(uint64_t p) {
+    TTEntry e;
+    e.score = (int)(int32_t)(uint32_t)(p & 0xFFFFFFFFull);
+    e.depth = (int)((p >> 32) & 0x1F);
+    e.flag  = (TTEntry::Flag)((p >> 37) & 0x3);
+    int hx  = (int)((p >> 39) & 0x1F);
+    e.bestMove.hexId    = (hx == 31) ? -1 : hx;
+    e.bestMove.tileValue = (int)((p >> 44) & 0xF);
+    return e;
+}
+
 TranspositionTable::TranspositionTable(size_t sizeMB)
     : hits(0)
     , misses(0) {
@@ -61,32 +85,43 @@ TranspositionTable::TranspositionTable(size_t sizeMB)
 void TranspositionTable::store(uint64_t hash, const TTEntry& entry) {
     if (!g_ttEnabled) return;
     TTSlot& slot = table[hash & mask];
-    // Depth-preferred replacement: keep a deeper result that's already there from a
-    // DIFFERENT position; otherwise (empty slot, shallower occupant, or same position)
-    // overwrite. Any eviction is correct -- a missing entry is just recomputed.
-    if (slot.entry.depth <= entry.depth || slot.key == hash) {
-        slot.key = hash;
-        slot.entry = entry;
+    const uint64_t packed = packEntry(entry);
+    // Depth-preferred replacement: keep a deeper result already there from a DIFFERENT position;
+    // otherwise (empty, shallower, or same position) overwrite. The read-modify-write isn't atomic,
+    // but a racing replacement only changes WHICH entry survives -- never the correctness of what a
+    // probe returns (the checksum guarantees that). Any eviction is fine; a miss just recomputes.
+    const uint64_t curData = slot.data.load(std::memory_order_relaxed);
+    if (curData != 0) {
+        const uint64_t curKey   = slot.xorKey.load(std::memory_order_relaxed) ^ curData;
+        const int      curDepth = (int)((curData >> 32) & 0x1F);
+        if (!(curDepth <= entry.depth || curKey == hash)) return;
     }
+    // Write the checksum word first, then data: a reader seeing the new data must also see the new
+    // xorKey to pass the check; any other interleaving fails the checksum and reads as a miss.
+    slot.xorKey.store(hash ^ packed, std::memory_order_relaxed);
+    slot.data.store(packed, std::memory_order_relaxed);
 }
 
 bool TranspositionTable::probe(uint64_t hash, TTEntry& entry) const {
-    if (!g_ttEnabled) { misses++; return false; }
+    if (!g_ttEnabled) { misses.fetch_add(1, std::memory_order_relaxed); return false; }
     const TTSlot& slot = table[hash & mask];
-    // Hit only if this slot actually holds THIS position (key match), not a collision.
-    if (slot.key == hash && slot.entry.depth > 0) {
-        entry = slot.entry;
-        hits++;
+    const uint64_t data   = slot.data.load(std::memory_order_relaxed);
+    const uint64_t xorKey = slot.xorKey.load(std::memory_order_relaxed);
+    // Hit only if the checksum matches: (xorKey ^ data) reconstructs the stored key, which must
+    // equal the probed hash. A torn (cross-write) read fails this and is treated as a miss.
+    if (data != 0 && (xorKey ^ data) == hash) {
+        entry = unpackEntry(data);
+        hits.fetch_add(1, std::memory_order_relaxed);
         return true;
     }
-    misses++;
+    misses.fetch_add(1, std::memory_order_relaxed);
     return false;
 }
 
 void TranspositionTable::clear() {
     std::fill(table.begin(), table.end(), TTSlot());
-    hits = 0;
-    misses = 0;
+    hits.store(0, std::memory_order_relaxed);
+    misses.store(0, std::memory_order_relaxed);
 }
 
 // ============================================================================
@@ -349,7 +384,7 @@ static SearchResult findBestMoveRootSplit(HexukiBitboard& board, const SearchCon
     SearchResult result;
     if (rootMoves.empty()) { result.score = evaluate(board); result.bestMove = Move(); return result; }
 
-    TranspositionTable tt(config.ttSizeMB);     // shared; ordering-only -> races are benign
+    TranspositionTable tt(config.ttSizeMB);     // shared; lockless XOR slots -> value races can't corrupt
     const int N = std::max(1, std::min(config.threads, (int)rootMoves.size()));
 
     Move bestMove = rootMoves[0];

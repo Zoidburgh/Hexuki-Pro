@@ -32,10 +32,16 @@ hash-invariant sweep (incremental hash == full recompute, 0 drift). `gate.cjs`, 
 `difftest-threads.cjs` all still PASS. Measured node reduction: **e=11 9.65x** (454.5M->47.1M),
 e=10 2.41x — the depth-13 lever, recovered.
 
-**Still gated OFF by default** (`useValueTT=false`). Remaining integration: (1) enable it on the
-single-thread WASM solve path; (2) for the native THREADED root-split the shared TT now carries
-VALUES, so a torn read can corrupt a value -> add the Hyatt lockless-XOR slot (or per-thread TTs)
-before turning value-TT on there; (3) clear the server disk cache if it is keyed by the numeric hash.
+**Integration — DONE.** (1) value-TT enabled on the single-thread WASM solve path (editor) and
+native `--threads 1`. (2) native multi-thread root-split: the shared TT now uses **lockless XOR
+checksum slots** (`TTSlot{atomic<uint64_t> xorKey,data}`, store `hash^packed` beside `packed`; a
+probe accepts only if `xorKey^data==hash`, so a torn read fails the check and is a miss) -> value-TT
+ON at every thread count, `difftest-threads` PASS (threaded==single==oracle, move-optimal). (3) the
+server disk cache is keyed by the normalized POSITION STRING (not the numeric hash) and its entries
+came from the correct ordering-only engine, so no invalidation was needed.
+
+**Measured:** e=12 perfect solve (to game end) ~15s on 8 cores (196M nodes) vs ~140s ordering-only
+before -- and single-thread value-TT agrees exactly (-395, h16t2). Depth-13 now in reach.
 
 ## Why this matters for depth 13
 Node counts roughly ~7-10x per extra empty for all-different tiles.

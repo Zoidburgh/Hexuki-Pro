@@ -6,6 +6,7 @@
 #include <vector>
 #include <cstdint>
 #include <chrono>
+#include <atomic>
 
 namespace hexuki {
 namespace minimax {
@@ -27,13 +28,27 @@ struct TTEntry {
         : score(s), depth(d), flag(f), bestMove(m) {}
 };
 
-// One slot of the fixed-size transposition table. `key` is the full position hash,
-// stored so we can detect index collisions (different positions mapping to the same
-// slot) -- on a collision we treat it as a miss and recompute (correct, just slower).
+// One slot of the fixed-size transposition table, made LOCKLESS via Hyatt's XOR checksum so the
+// shared TT is safe when the root-split workers store VALUES concurrently. Instead of storing the
+// raw key, we store `xorKey = hash ^ packed` next to `packed` (the entry squeezed into 64 bits).
+// A reader recomputes `xorKey ^ packed` and accepts the entry only if it equals the probed hash --
+// so a torn read that mixes one writer's xorKey with another's packed fails the check and is simply
+// treated as a miss (recompute: correct, just slower). data==0 marks an empty slot. The two words
+// are relaxed atomics: no data race (defined behavior), and the checksum -- not ordering -- is what
+// guarantees we never return a corrupted value. (Single-thread WASM compiles these to plain loads.)
 struct TTSlot {
-    uint64_t key;
-    TTEntry entry;
-    TTSlot() : key(0), entry() {}
+    std::atomic<uint64_t> xorKey;
+    std::atomic<uint64_t> data;
+    TTSlot() : xorKey(0), data(0) {}
+    // Copyable so std::vector::assign / std::fill can build & clear the table (relaxed loads/stores).
+    TTSlot(const TTSlot& o)
+        : xorKey(o.xorKey.load(std::memory_order_relaxed)),
+          data(o.data.load(std::memory_order_relaxed)) {}
+    TTSlot& operator=(const TTSlot& o) {
+        xorKey.store(o.xorKey.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        data.store(o.data.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        return *this;
+    }
 };
 
 /**
@@ -49,14 +64,14 @@ public:
     void clear();
 
     size_t getSize() const { return table.size(); }
-    size_t getHits() const { return hits; }
-    size_t getMisses() const { return misses; }
+    size_t getHits() const { return hits.load(std::memory_order_relaxed); }
+    size_t getMisses() const { return misses.load(std::memory_order_relaxed); }
 
 private:
     std::vector<TTSlot> table;   // fixed power-of-two size; index = hash & mask
     size_t mask;
-    mutable size_t hits;
-    mutable size_t misses;
+    mutable std::atomic<size_t> hits;    // stats only; relaxed (exact count not required)
+    mutable std::atomic<size_t> misses;
 };
 
 /**
