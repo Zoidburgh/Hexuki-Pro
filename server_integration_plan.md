@@ -132,7 +132,8 @@ shipped/seeded.
 | S1.6 | zero-overhead streaming (no 2x) | **DONE** | engine emits @PROGRESS per ID depth (gated flag); worker runs ONE streaming solve, captures via Module.print. Single-ID totals (369,599 vs old 770,049). Progress + cancel kept. Gate PASS, root wasm == gate binary. |
 | — | editor → server (auto + WASM fallback) | **DONE (testWithMinimax)** | uses server when /health responds (no freeze, live depth in console, injected Stop button → best-so-far); falls back to in-browser WASM UNCHANGED when server is down. CORS verified. TODO: route runMinimaxMove (AI auto-play) too. |
 | S2 | worker-thread throughput pool | not started | ~7× throughput, no races |
-| S3 | native build + Lazy SMP | not started | needs MSVC Build Tools |
+| S3a | native build (MinGW, portable) | **DONE** | tools/mingw64 (gitignored); build-native.ps1 -> native/hexuki-solve.exe; values match WASM |
+| S3b | Lazy SMP (native multi-thread) | **DONE** | thread-safe lockless TT (#ifdef HEXUKI_THREADS; WASM keeps fast TT -> no regression). ~2.6-2.85x at 8 threads. Threaded correctness stress test PASS (14 positions, threads1==threads8 x3). NOTE: laptop hybrid P/E cores make absolute timings swing ~2x; relative speedup is solid. Next: wire native into the server. |
 | — | client solve() fallback + offline toggle | not started | keeps offline working |
 | — | precompute shipped puzzles | not started | editor solves once, bakes in |
 
