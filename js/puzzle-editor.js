@@ -840,6 +840,84 @@ async function testWithMCTS() {
     }
 }
 
+// ============================================================================
+// Solve-server integration (optional). Uses the local server's anytime-search job API
+// when it's running (no browser freeze, live progress, cancellable -> returns best-so-far),
+// and falls back to the in-browser WASM engine, UNCHANGED, when the server is not running.
+// All additive: if the server is down, behaviour is exactly as before.
+// ============================================================================
+const SOLVE_SERVER = 'http://localhost:8080';
+let currentSolveJob = null; // { jobId, cancelled } while a server solve is in flight
+
+async function serverAvailable() {
+    try {
+        const r = await fetch(SOLVE_SERVER + '/health', { method: 'GET', signal: AbortSignal.timeout(600) });
+        return r.ok;
+    } catch { return false; }
+}
+
+// Server "best" -> the same shape the WASM call returns, so downstream code is unchanged.
+function toWasmShape(best) {
+    if (!best) return null;
+    return {
+        hexId: best.bestMove.hexId, tileValue: best.bestMove.tileValue,
+        score: best.score, depth: best.depth,
+        nodes: best.nodes, timeMs: best.timeMs, timeout: best.timeout,
+    };
+}
+
+// Run a solve as a server job; poll for progress; resolve to a WASM-shaped result.
+// Cancellable via cancelSolve() -> returns the best fully-completed depth found so far.
+async function serverSolve(position, onProgress) {
+    const start = await fetch(SOLVE_SERVER + '/jobs', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ position }),
+    }).then(r => r.json());
+
+    if (start.status === 'done' && start.best) return toWasmShape(start.best); // cache hit -> instant
+    const jobId = start.jobId;
+    if (!jobId) throw new Error(start.error || 'server did not start a job');
+    currentSolveJob = { jobId, cancelled: false };
+
+    while (true) {
+        await sleep(400);
+        if (currentSolveJob && currentSolveJob.cancelled) {
+            const c = await fetch(`${SOLVE_SERVER}/jobs/${jobId}/cancel`, { method: 'POST' }).then(r => r.json());
+            return toWasmShape(c.best);
+        }
+        const s = await fetch(`${SOLVE_SERVER}/jobs/${jobId}`).then(r => r.json());
+        if (s.best && onProgress) onProgress(s.best.depth, s.best.score);
+        if (s.status === 'done') return toWasmShape(s.best);
+        if (s.status === 'cancelled') return toWasmShape(s.best);
+        if (s.status === 'error') throw new Error(s.error || 'server solve error');
+    }
+}
+
+function cancelSolve() {
+    if (currentSolveJob) currentSolveJob.cancelled = true;
+}
+
+// Inject a floating Stop button while a server solve runs (no HTML changes needed).
+function showStopButton(show) {
+    let btn = document.getElementById('solveStopBtn');
+    if (show) {
+        if (!btn) {
+            btn = document.createElement('button');
+            btn.id = 'solveStopBtn';
+            btn.style.cssText = 'position:fixed;bottom:20px;right:20px;z-index:9999;background:#ff9933;' +
+                'color:#000;font-weight:bold;border:none;padding:12px 18px;border-radius:8px;cursor:pointer;' +
+                'box-shadow:0 2px 8px rgba(0,0,0,.4);font-family:inherit';
+            btn.onclick = () => { cancelSolve(); btn.textContent = 'stopping…'; btn.disabled = true; };
+            document.body.appendChild(btn);
+        }
+        btn.textContent = '■ Stop (return best so far)';
+        btn.disabled = false;
+        btn.style.display = 'block';
+    } else if (btn) {
+        btn.style.display = 'none';
+    }
+}
+
 async function testWithMinimax() {
     if (!playGame) {
         alert('❌ Start playing first!');
@@ -874,13 +952,26 @@ async function testWithMinimax() {
         console.log(`📋 Position string: ${position}`);
         console.log(`📊 Empty hexes: ${emptyHexes}, P1 tiles: ${playGame.player1Tiles.length}, P2 tiles: ${playGame.player2Tiles.length}`);
 
-        // Console notification like visualizer
         const depth = emptyHexes; // Search to game end (no deeper than remaining moves)
-        console.log(`⚡ C++ WASM Minimax: running depth ${depth} search...`);
 
-        wasmModule.loadPosition(position);
-        const resultJson = wasmModule.minimaxFindBestMove(depth, 600000);  // timeout=600000ms (10 min) — long enough for a 12-empty to solve fully; timed-out results are flagged honestly in logMinimaxSearch
-        const result = JSON.parse(resultJson);
+        // Prefer the local solve server (off-browser: no freeze, live progress, Stop button
+        // returns best-so-far). Fall back to the in-browser WASM engine, unchanged, if it's down.
+        let result;
+        if (await serverAvailable()) {
+            console.log(`⚡ Solving on local server (depth ${depth}, no freeze, cancellable)...`);
+            showStopButton(true);
+            try {
+                result = await serverSolve(position, (d, sc) => console.log(`   …reached depth ${d} (score ${sc})`));
+            } finally {
+                showStopButton(false);
+                currentSolveJob = null;
+            }
+            if (!result) { console.log('🛑 Solve cancelled before any depth completed — no result.'); return; }
+        } else {
+            console.log(`⚡ C++ WASM Minimax (server not running — solving in-browser): depth ${depth}...`);
+            wasmModule.loadPosition(position);
+            result = JSON.parse(wasmModule.minimaxFindBestMove(depth, 600000));
+        }
 
         // Check for minimax failure (sentinel values)
         if (result.score === -1000000 || result.score === 1000000 || result.depth === 0) {
