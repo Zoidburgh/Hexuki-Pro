@@ -228,6 +228,35 @@ extern "C" const char* wasmMinimaxFindBestMove(int depth, int timeLimitMs) {
     return result.c_str();
 }
 
+// Streaming variant: same result, but emits a "@PROGRESS ..." line per completed ID depth
+// (one internal iterative-deepening search -> the server gets live progress + cancel with NO
+// re-search overhead). The progress lines go to stdout; the loader captures them via Module.print.
+extern "C" const char* wasmMinimaxFindBestMoveStream(int depth, int timeLimitMs) {
+    static std::string result;
+    if (!g_board) {
+        result = "{\"error\":\"Not initialized\"}";
+        return result.c_str();
+    }
+
+    minimax::SearchConfig config;
+    config.maxDepth = depth;
+    config.timeLimitMs = timeLimitMs;
+    config.streamProgress = true;
+
+    auto searchResult = minimax::findBestMove(*g_board, config);
+
+    result = "{";
+    result += "\"hexId\":" + std::to_string(searchResult.bestMove.hexId) + ",";
+    result += "\"tileValue\":" + std::to_string(searchResult.bestMove.tileValue) + ",";
+    result += "\"score\":" + std::to_string(searchResult.score) + ",";
+    result += "\"depth\":" + std::to_string(searchResult.depth) + ",";
+    result += "\"nodes\":" + std::to_string(searchResult.nodesSearched) + ",";
+    result += "\"timeMs\":" + std::to_string(searchResult.timeMs) + ",";
+    result += "\"timeout\":" + std::string(searchResult.timeout ? "true" : "false");
+    result += "}";
+    return result.c_str();
+}
+
 // ============================================================================
 // Cleanup
 // ============================================================================
@@ -265,6 +294,10 @@ std::string wasmMinimaxFindBestMoveStr(int depth, int timeLimitMs) {
     return std::string(wasmMinimaxFindBestMove(depth, timeLimitMs));
 }
 
+std::string wasmMinimaxFindBestMoveStreamStr(int depth, int timeLimitMs) {
+    return std::string(wasmMinimaxFindBestMoveStream(depth, timeLimitMs));
+}
+
 // ============================================================================
 // Emscripten Bindings (using std::string - no raw pointers)
 // ============================================================================
@@ -285,5 +318,6 @@ EMSCRIPTEN_BINDINGS(hexuki_module) {
     function("getValidMoves", &wasmGetValidMovesStr);
     function("mctsFindBestMove", &wasmMCTSFindBestMoveStr);
     function("minimaxFindBestMove", &wasmMinimaxFindBestMoveStr);
+    function("minimaxFindBestMoveStream", &wasmMinimaxFindBestMoveStreamStr);
     function("cleanup", &wasmCleanup);
 }

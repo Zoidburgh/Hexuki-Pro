@@ -128,7 +128,8 @@ shipped/seeded.
 | Phase | What | Status | Notes |
 |---|---|---|---|
 | S1 | Node+WASM /solve + disk cache | **DONE** | verified: solve off-browser, 1ms cache hit, order-normalized key, /health, timeout honesty |
-| S1.5 | async jobs: anytime search + cancel (no cap) | **DONE (server side)** | worker thread per job, live depth progress, cancel terminates + returns best-completed-depth (flagged complete:false), natural completion caches. ~20-30% overhead from external ID (optimize later). |
+| S1.5 | async jobs: anytime search + cancel (no cap) | **DONE** | worker thread per job, live depth progress, cancel terminates + returns best-completed-depth (flagged complete:false), natural completion caches. |
+| S1.6 | zero-overhead streaming (no 2x) | **DONE** | engine emits @PROGRESS per ID depth (gated flag); worker runs ONE streaming solve, captures via Module.print. Single-ID totals (369,599 vs old 770,049). Progress + cancel kept. Gate PASS, root wasm == gate binary. |
 | — | editor → server (auto + WASM fallback) | **DONE (testWithMinimax)** | uses server when /health responds (no freeze, live depth in console, injected Stop button → best-so-far); falls back to in-browser WASM UNCHANGED when server is down. CORS verified. TODO: route runMinimaxMove (AI auto-play) too. |
 | S2 | worker-thread throughput pool | not started | ~7× throughput, no races |
 | S3 | native build + Lazy SMP | not started | needs MSVC Build Tools |

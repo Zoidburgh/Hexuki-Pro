@@ -1,49 +1,55 @@
-// Solve worker — runs in a worker_thread so the server stays responsive (and can TERMINATE
-// it instantly on cancel). It drives iterative deepening EXTERNALLY (depth 1, 2, 3, ...),
-// posting each COMPLETED depth back to the server. So there is always a "best answer so far",
-// and cancel = terminate this worker + keep the last reported depth. No hard time cap.
+// Solve worker — runs in a worker_thread so the server stays responsive and can TERMINATE it
+// instantly on cancel. Uses the engine's STREAMING entry (minimaxFindBestMoveStream): ONE
+// internal iterative-deepening search that emits a "@PROGRESS" line per completed depth. The
+// worker captures those (via Module.print) and posts each as best-so-far. So we get live
+// progress + cancel with NO re-search overhead (totals are the true single-ID node counts).
 //
-// Cost: re-running lower depths each step adds ~20-30% vs a single internal-ID solve. That
-// buys live progress + a meaningful cancel. Batch/precompute that doesn't need cancel can use
-// the synchronous POST /solve instead. (A zero-overhead version would stream the engine's
-// internal per-depth output; deferred — it needs a gated engine change.)
+// Cancel = the server terminates this worker; the last posted @PROGRESS is the best-so-far
+// (the in-progress, incomplete depth is correctly discarded).
 
 const { parentPort, workerData } = require('worker_threads');
 const path = require('path');
 
 (async () => {
-    const Factory = require(path.join(__dirname, '..', 'bench', 'engine', 'hexuki.js'));
-    const m = await Factory();
-    m.initialize();
-
     const { position } = workerData;
-    m.loadPosition(position);
     let empties = 0;
-    for (let h = 0; h < 19; h++) if (m.getTileValue(h) === 0) empties++;
-
     let last = null;
-    let totalNodes = 0;   // accumulated across every depth pass (the real work done)
-    let totalMs = 0;
-    for (let d = 1; d <= empties; d++) {
-        m.loadPosition(position);                       // fresh internal ID to depth d
-        const r = JSON.parse(m.minimaxFindBestMove(d, 0x7fffffff)); // 0x7fffffff ms = effectively no cap
-        totalNodes += (r.nodes || 0);
-        totalMs += (r.timeMs || 0);
+
+    // @PROGRESS <depth> <score> <hexId> <tileValue> <totalNodes> <elapsedMs>
+    const onLine = (s) => {
+        if (typeof s !== 'string' || s.lastIndexOf('@PROGRESS', 0) !== 0) return;
+        const p = s.split(/\s+/);
+        const depth = +p[1], score = +p[2], hexId = +p[3], tileValue = +p[4], totalNodes = +p[5], elapsed = +p[6];
         last = {
-            bestMove: { hexId: r.hexId, tileValue: r.tileValue },
-            score: r.score,
-            depth: r.depth,
-            empties,
-            timeout: !!r.timeout,
-            complete: !r.timeout && r.depth >= empties, // a real solve = reached game end
-            nodes: r.nodes,                             // this depth pass
-            timeMs: r.timeMs,
-            totalNodes,                                 // cumulative across all passes so far
-            totalMs,
+            bestMove: { hexId, tileValue },
+            score, depth, empties,
+            timeout: false,
+            complete: depth >= empties,             // final depth == empties -> full solve
+            nodes: totalNodes, timeMs: elapsed,
+            totalNodes, totalMs: elapsed,            // true cumulative totals (single ID, no 2x)
         };
         parentPort.postMessage({ progress: last });
-        if (last.complete) break;                       // reached game end -> fully solved, stop
-        await new Promise(res => setImmediate(res));
-    }
-    parentPort.postMessage({ done: last });
+    };
+
+    const Factory = require(path.join(__dirname, '..', 'bench', 'engine', 'hexuki.js'));
+    const m = await Factory({ print: onLine });     // route engine stdout (@PROGRESS) to onLine
+    m.initialize();
+
+    m.loadPosition(position);
+    for (let h = 0; h < 19; h++) if (m.getTileValue(h) === 0) empties++;
+
+    // Single streaming search to game end, no practical cap (0x7fffffff ms). @PROGRESS lines
+    // fire synchronously per depth during this call -> real-time progress out to the server.
+    const r = JSON.parse(m.minimaxFindBestMoveStream(empties, 0x7fffffff));
+
+    parentPort.postMessage({
+        done: {
+            bestMove: { hexId: r.hexId, tileValue: r.tileValue },
+            score: r.score, depth: r.depth, empties,
+            timeout: !!r.timeout,
+            complete: !r.timeout && r.depth >= empties,
+            nodes: r.nodes, timeMs: r.timeMs,
+            totalNodes: r.nodes, totalMs: r.timeMs, // engine's true total for the single ID search
+        }
+    });
 })().catch(e => parentPort.postMessage({ error: e.message }));

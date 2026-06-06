@@ -89,6 +89,9 @@ struct SearchConfig {
     bool useTranspositionTable = true;  // Cache positions
     size_t ttSizeMB = 256;          // Transposition table size (fixed; eviction on collision)
     bool verbose = false;           // Print search info
+    bool streamProgress = false;    // Emit a machine-readable "@PROGRESS" line per completed
+                                    // ID depth (for the server's anytime search: progress +
+                                    // cancel with NO re-search overhead). Off by default.
 
     SearchConfig() = default;
 };

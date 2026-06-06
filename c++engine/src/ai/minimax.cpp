@@ -396,6 +396,16 @@ SearchResult findBestMove(HexukiBitboard& board, const SearchConfig& config) {
                           << " time=" << elapsed << "ms" << std::endl;
             }
 
+            // Machine-readable per-depth progress for the server's anytime search. ONE line
+            // per completed ID depth -> the worker streams these out (progress) and keeps the
+            // last one as best-so-far on cancel. Cumulative nodes/time, so no re-search needed.
+            // Format: @PROGRESS <depth> <score> <hexId> <tileValue> <totalNodes> <elapsedMs>
+            if (config.streamProgress) {
+                std::cout << "@PROGRESS " << depth << " " << bestScore << " "
+                          << bestMove.hexId << " " << bestMove.tileValue << " "
+                          << result.nodesSearched << " " << elapsed << std::endl;
+            }
+
             // Stop if mate found
             if (std::abs(bestScore) > MATE_SCORE - 100) {
                 break;
