@@ -15,11 +15,14 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { Worker } = require('worker_threads');
+const { spawn } = require('child_process');
 
 const PORT = parseInt(process.env.HEXUKI_PORT || '8080', 10);
 const WASM_PATH = path.join(__dirname, '..', 'bench', 'engine', 'hexuki.js');
+const NATIVE_EXE = path.join(__dirname, '..', 'native', 'hexuki-solve.exe'); // multi-core native solver
 const CACHE_PATH = path.join(__dirname, 'cache.jsonl');
 const DEFAULT_MAX_MS = 600000; // 10 min cap per solve
+const HAS_NATIVE = fs.existsSync(NATIVE_EXE);
 
 // ---- position normalization: one canonical cache key regardless of input ordering ----
 // "h6:7,h4:3|p1:6,2,5|p2:..|turn:1" and "h4:3,h6:7|p1:2,5,6|p2:..|turn:1" -> same key.
@@ -99,9 +102,62 @@ function solve(m, position, maxMs) {
 const jobs = new Map();
 let jobCounter = 0;
 
+function emptiesOf(position) {
+    const board = (position.split('|')[0] || '');
+    const placed = board ? board.split(',').filter(Boolean).length : 0;
+    return 19 - placed;
+}
+
 function startJob(position) {
     const id = `job${++jobCounter}`;
-    const job = { id, position, status: 'running', best: null, error: null, worker: null, startedAt: Date.now() };
+    const empties = emptiesOf(position);
+    const job = { id, position, empties, status: 'running', best: null, error: null,
+                  worker: null, proc: null, kind: null, startedAt: Date.now() };
+
+    if (HAS_NATIVE) {
+        // Native multi-core solve: spawn the exe (uses all hardware threads, Lazy SMP), stream
+        // @PROGRESS, cancel = kill the process. Same anytime-search contract as the WASM worker.
+        job.kind = 'native';
+        const child = spawn(NATIVE_EXE, [position, '0', '2147483647', '--stream']);
+        job.proc = child;
+        let buf = '';
+        child.stdout.on('data', d => {
+            buf += d.toString();
+            let nl;
+            while ((nl = buf.indexOf('\n')) >= 0) {
+                const line = buf.slice(0, nl).trim();
+                buf = buf.slice(nl + 1);
+                if (line.startsWith('@PROGRESS')) {
+                    const p = line.split(/\s+/); // @PROGRESS depth score hexId tileValue totalNodes elapsedMs
+                    job.best = {
+                        bestMove: { hexId: +p[3], tileValue: +p[4] }, score: +p[2], depth: +p[1],
+                        empties, timeout: false, complete: (+p[1]) >= empties,
+                        nodes: +p[5], timeMs: +p[6], totalNodes: +p[5], totalMs: +p[6],
+                    };
+                } else if (line.startsWith('{')) {
+                    try {
+                        const r = JSON.parse(line);
+                        job.best = {
+                            bestMove: { hexId: r.hexId, tileValue: r.tileValue }, score: r.score,
+                            depth: r.depth, empties: r.empties, timeout: !!r.timeout,
+                            complete: !r.timeout && r.depth >= r.empties,
+                            nodes: r.nodes, timeMs: r.timeMs, totalNodes: r.nodes, totalMs: r.timeMs,
+                        };
+                        job.status = 'done';
+                        if (job.best.complete) cachePut(position, job.best);
+                        console.log(`job ${id} (native) done: score ${job.best.score} depth ${job.best.depth}`);
+                    } catch {}
+                }
+            }
+        });
+        child.on('error', e => { job.status = 'error'; job.error = String(e.message || e); });
+        child.on('exit', () => { if (job.status === 'running') job.status = 'error', job.error = job.error || 'native process exited'; });
+        jobs.set(id, job);
+        return job;
+    }
+
+    // Fallback: WASM worker thread (no native exe present).
+    job.kind = 'wasm';
     const worker = new Worker(path.join(__dirname, 'solve-worker.cjs'), { workerData: { position } });
     job.worker = worker;
     worker.on('message', msg => {
@@ -110,7 +166,7 @@ function startJob(position) {
             job.best = msg.done || job.best;
             job.status = 'done';
             if (job.best && job.best.complete) cachePut(position, job.best); // cache full solves only
-            console.log(`job ${id} done: score ${job.best && job.best.score} depth ${job.best && job.best.depth}`);
+            console.log(`job ${id} (wasm) done: score ${job.best && job.best.score} depth ${job.best && job.best.depth}`);
         } else if (msg.error) { job.status = 'error'; job.error = msg.error; }
     });
     worker.on('error', e => { job.status = 'error'; job.error = String(e && e.message || e); });
@@ -129,7 +185,8 @@ function jobView(job) {
 function cancelJob(job) {
     if (job.status === 'running') {
         job.status = 'cancelled';
-        if (job.worker) job.worker.terminate(); // instant stop, even mid-depth; best-so-far is kept
+        if (job.kind === 'native' && job.proc) job.proc.kill();      // kill native process
+        else if (job.worker) job.worker.terminate();                 // terminate WASM worker
         console.log(`job ${job.id} cancelled at depth ${job.best ? job.best.depth : 0}`);
     }
     return jobView(job);
@@ -149,7 +206,7 @@ function send(res, code, obj) {
 const server = http.createServer((req, res) => {
     if (req.method === 'OPTIONS') return send(res, 204, {});
     if (req.method === 'GET' && (req.url === '/' || req.url === '/health')) {
-        return send(res, 200, { ok: true, engineLoaded: !!engine, cachedPositions: cache.size, activeJobs: jobs.size });
+        return send(res, 200, { ok: true, solver: HAS_NATIVE ? 'native (multi-core)' : 'wasm', engineLoaded: !!engine, cachedPositions: cache.size, activeJobs: jobs.size });
     }
 
     // --- async job API (anytime search + cancel, no cap) ---
@@ -215,7 +272,9 @@ loadCache();
 getEngine().then(() => {
     server.listen(PORT, () => {
         console.log(`Hexuki solve server: http://localhost:${PORT}`);
-        console.log(`  POST /solve   {"position":"h..|p1:..|p2:..|turn:1", "maxMs":600000}`);
+        console.log(`  solver: ${HAS_NATIVE ? 'NATIVE (multi-core Lazy SMP)' : 'WASM (single-thread; build native/ for multi-core)'}`);
+        console.log(`  POST /jobs    {"position":"..."}   (anytime search + cancel; used by the editor)`);
+        console.log(`  POST /solve   {"position":"...", "maxMs":600000}   (synchronous)`);
         console.log(`  GET  /health`);
     });
 });
