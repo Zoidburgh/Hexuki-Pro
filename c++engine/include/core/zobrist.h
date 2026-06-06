@@ -28,6 +28,11 @@ public:
     // Get hash for player-to-move
     static uint64_t getPlayerHash(int player);
 
+    // Get hash term for "playerIdx (0=P1,1=P2) holds `count` tiles of value `tileValue`".
+    // Used for incremental hand-count updates in makeMove/unmakeMove so the running hash stays
+    // equal to the full hash() (binds each hand tile to its owning player -> no cross-player collisions).
+    static uint64_t getTileCountHash(int playerIdx, int tileValue, int count);
+
     // Calculate full hash for a board state
     static uint64_t hash(const HexukiBitboard& board);
 

@@ -142,8 +142,9 @@ private:
     int calculatePlayerScore(int player) const;
     int calculateChainScore(const int* chain, int chainLength) const;
 
-    // Zobrist hashing
-    void updateZobristHash(const Move& move);
+    // Zobrist hashing: incremental delta for `mover` playing `move` with `oldCount` of that tile
+    // value in hand pre-move. Keeps zobristHash == Zobrist::hash(*this) (self-inverse).
+    void applyHashDelta(const Move& move, int mover, int oldCount);
 
     // Helper: find hex at row/col
     int findHexAt(int row, int col) const;

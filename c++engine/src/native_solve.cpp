@@ -51,6 +51,11 @@ int main(int argc, char** argv) {
     // progress is only emitted by the single-threaded iterative-deepening path; the root-split
     // path returns the final result without per-depth @PROGRESS.)
     config.threads = (threadsArg > 0) ? threadsArg : std::max(1u, std::thread::hardware_concurrency());
+    // Value-TT (cached values, ~2-10x fewer nodes) is enabled ONLY single-threaded, where it's
+    // proven == pure alpha-beta. The multi-thread root-split shares one TT; a value-carrying entry
+    // can be torn by a concurrent write, so leave it ordering-only there until a lockless-XOR slot
+    // is added (tracked in track1_plan.md). Ordering-only multi-thread stays correct by construction.
+    config.useValueTT = (config.threads <= 1);
 
     auto r = minimax::findBestMove(board, config);
 

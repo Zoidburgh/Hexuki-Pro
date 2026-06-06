@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <iostream>
 #include <limits>
+#include <string>
 #ifdef HEXUKI_THREADS
 #include <thread>
 #include <atomic>
@@ -35,6 +36,15 @@ static thread_local std::vector<Move> s_moveStack[MOVE_STACK_SIZE];
 // so the search is pure alpha-beta -- a GROUND-TRUTH oracle that cannot have any TT bug. Set
 // from config.useTranspositionTable at the start of findBestMove.
 static bool g_ttEnabled = true;
+
+// TRACK 1: when true the TT also RETURNS cached values (EXACT) + bound cutoffs, not just ordering
+// hints. Off by default (shipped = ordering-only). Set from config.useValueTT in findBestMove.
+static bool g_useValueTT = false;
+// Debug: when true, every node asserts the incremental hash equals the full recompute (catches any
+// future Zobrist drift -- the exact bug class that made the value-TT return wrong values). Off by
+// default; turned on by the value-TT difftest. g_firstBadLogged limits output to the first offender.
+static bool g_verifyExact = false;
+static bool g_firstBadLogged = false;
 
 TranspositionTable::TranspositionTable(size_t sizeMB)
     : hits(0)
@@ -194,6 +204,19 @@ int alphaBeta(
     }
 
     uint64_t hash = board.getHash();
+
+    // TRACK 1 debug: the incremental hash must equal the full recompute at EVERY node. If this
+    // holds across the whole search, the running hash is a faithful, unique fingerprint (the full
+    // hash binds hands to players) -> no cross-player collisions -> the value-TT can trust it.
+    if (g_verifyExact && !g_firstBadLogged) {
+        uint64_t full = Zobrist::hash(board);
+        if (full != hash) {
+            g_firstBadLogged = true;
+            std::cout << "@HASHDRIFT incremental=" << hash << " full=" << full
+                      << " pos=" << board.savePosition() << std::endl;
+        }
+    }
+
     const int alphaOrig = alpha;  // window we were given -- flag the stored entry against THIS
 
     // Transposition table lookup (textbook pattern). Narrow the window from a stored
@@ -204,13 +227,19 @@ int alphaBeta(
 
     if (tt.probe(hash, ttEntry)) {
         ttHit = true;
-        // TT is used for MOVE ORDERING ONLY (ttEntry.bestMove, via orderMoves below) -- it does
-        // NOT return stored values or take bound cutoffs. Returning values introduced a subtle
-        // wrong-value bug (stored EXACT entries came back wrong on ~6% of positions; differential
-        // testing vs pure alpha-beta caught it). Ordering can't change the minimax value, so this
-        // is correct BY CONSTRUCTION, at some speed cost. Recovering the value-TT speedup safely
-        // is future work (see the diff-test gate). g_ttEnabled still gates the whole TT for the
-        // ground-truth oracle (minimaxFindBestMoveNoTT).
+        // Default (g_useValueTT == false): TT is MOVE ORDERING ONLY (ttEntry.bestMove via
+        // orderMoves below). Correct by construction -- ordering can't change the value.
+        // TRACK 1 (g_useValueTT == true): also return cached values + take bound cutoffs (the
+        // speed lever under debugging). This is the path being made correct; keep it flag-gated.
+        if (g_useValueTT && ttEntry.depth >= depth) {
+            if (ttEntry.flag == TTEntry::EXACT) {
+                return ttEntry.score;
+            } else if (ttEntry.flag == TTEntry::LOWER_BOUND && ttEntry.score >= beta) {
+                return ttEntry.score;
+            } else if (ttEntry.flag == TTEntry::UPPER_BOUND && ttEntry.score <= alpha) {
+                return ttEntry.score;
+            }
+        }
     }
 
     // Get and order moves. Fill a per-ply reusable buffer instead of allocating a fresh
@@ -312,6 +341,8 @@ static SearchResult findBestMoveRootSplit(HexukiBitboard& board, const SearchCon
     Zobrist::initialize();
 
     g_ttEnabled = config.useTranspositionTable;
+    g_useValueTT = config.useValueTT;
+    g_verifyExact = config.verifyExact; g_firstBadLogged = false;
     auto startTime = std::chrono::steady_clock::now();
 
     std::vector<Move> rootMoves = board.getValidMoves();
@@ -410,6 +441,8 @@ SearchResult findBestMove(HexukiBitboard& board, const SearchConfig& config) {
     SearchResult result;
 
     g_ttEnabled = config.useTranspositionTable;  // false => pure alpha-beta ground-truth oracle
+    g_useValueTT = config.useValueTT;
+    g_verifyExact = config.verifyExact; g_firstBadLogged = false;
 
     auto startTime = std::chrono::steady_clock::now();
 

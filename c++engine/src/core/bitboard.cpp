@@ -548,8 +548,12 @@ void HexukiBitboard::makeMove(const Move& move) {
     hexOccupied |= (1u << move.hexId);
     hexValues[move.hexId] = move.tileValue;
 
-    // Remove tile from current player's available tiles
-    std::vector<int>& tiles = (currentPlayer == PLAYER_1) ? p1AvailableTiles : p2AvailableTiles;
+    // Remove tile from current player's available tiles. Capture the count of this value
+    // BEFORE removal so the hash can swap the per-player hand-count term (oldCount -> newCount).
+    const int mover = currentPlayer;  // the player making this move (hash still holds their state)
+    std::vector<int>& tiles = (mover == PLAYER_1) ? p1AvailableTiles : p2AvailableTiles;
+    int oldCount = 0;
+    for (int t : tiles) if (t == move.tileValue) oldCount++;
     auto it = std::find(tiles.begin(), tiles.end(), move.tileValue);
     if (it != tiles.end()) {
         tiles.erase(it);  // Remove first occurrence
@@ -560,22 +564,27 @@ void HexukiBitboard::makeMove(const Move& move) {
     // causing board state corruption when move ordering called makeMove/unmakeMove repeatedly.
     // This led to different minimax scores for the same position (e.g., +265, +261, +275).
 
-    // Update zobrist hash
-    updateZobristHash(move);
+    // Incrementally maintain the FULL-hash invariant (zobristHash == Zobrist::hash(*this)):
+    applyHashDelta(move, mover, oldCount);
 
     // Switch to next player
-    currentPlayer = (currentPlayer == PLAYER_1) ? PLAYER_2 : PLAYER_1;
+    currentPlayer = (mover == PLAYER_1) ? PLAYER_2 : PLAYER_1;
 }
 
 void HexukiBitboard::unmakeMove(const Move& move) {
     // Switch player back (undo the player switch from makeMove)
     currentPlayer = (currentPlayer == PLAYER_1) ? PLAYER_2 : PLAYER_1;
+    const int mover = currentPlayer;
 
-    // Reverse zobrist hash update (XOR is self-inverse)
-    updateZobristHash(move);
+    // The hand currently holds the POST-move count (newCount); the move added one back, so the
+    // pre-move count was newCount+1. Apply the SAME delta as makeMove (XOR is self-inverse) to
+    // restore zobristHash exactly. Pass oldCount = newCount + 1.
+    std::vector<int>& tiles = (mover == PLAYER_1) ? p1AvailableTiles : p2AvailableTiles;
+    int newCount = 0;
+    for (int t : tiles) if (t == move.tileValue) newCount++;
+    applyHashDelta(move, mover, newCount + 1);
 
     // Add tile back to player's available tiles
-    std::vector<int>& tiles = (currentPlayer == PLAYER_1) ? p1AvailableTiles : p2AvailableTiles;
     tiles.push_back(move.tileValue);
 
     // Clear tile from board
@@ -633,12 +642,24 @@ int HexukiBitboard::getScore(int player) const {
 // Zobrist Hashing
 // ============================================================================
 
-void HexukiBitboard::updateZobristHash(const Move& move) {
-    // XOR in the hash for this tile placement
+// Incrementally apply the hash change for `mover` (1 or 2) playing `move`, where the mover held
+// `oldCount` tiles of move.tileValue BEFORE the move. Keeps zobristHash == Zobrist::hash(*this).
+// XOR is self-inverse, so calling this again with the same (move, mover, oldCount) undoes it --
+// makeMove passes the pre-move count, unmakeMove reconstructs the identical count (newCount+1).
+void HexukiBitboard::applyHashDelta(const Move& move, int mover, int oldCount) {
+    // (1) tile placed on / removed from the board
     zobristHash ^= Zobrist::getTileHash(move.hexId, move.tileValue);
 
-    // XOR in player-to-move hash
-    zobristHash ^= Zobrist::getPlayerHash(currentPlayer);
+    // (2) side-to-move flips between the two players: the delta is the CONSTANT XOR of both
+    //     player hashes (the old "XOR one mover hash" left the hash with no player term).
+    zobristHash ^= Zobrist::getPlayerHash(PLAYER_1) ^ Zobrist::getPlayerHash(PLAYER_2);
+
+    // (3) the mover's hand-count term for this value: oldCount -> oldCount-1, bound to the mover
+    //     (this is what the broken update omitted, so P1{1}P2{6} and P1{6}P2{1} hashed alike).
+    const int pIdx = mover - 1;
+    const int newCount = oldCount - 1;
+    if (oldCount > 0) zobristHash ^= Zobrist::getTileCountHash(pIdx, move.tileValue, oldCount);
+    if (newCount > 0) zobristHash ^= Zobrist::getTileCountHash(pIdx, move.tileValue, newCount);
 }
 
 // ============================================================================

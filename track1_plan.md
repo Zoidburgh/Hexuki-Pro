@@ -5,6 +5,38 @@
 > The value-TT had a bug (stored wrong EXACT values on ~6% of positions); we turned it off. This
 > plan recovers it WITHOUT breaking the now-correct engine.
 
+## ✅ RESOLVED (2026-06) — root cause: a Zobrist HASH bug, not the alpha-beta logic
+The value-TT wasn't returning wrong values because of a flag/window/replacement flaw. The
+**incremental Zobrist hash was wrong**: `updateZobristHash` XOR'd only the board tile + a single
+player hash, and NEVER updated the per-player hand-count term that the full `Zobrist::hash()`
+includes. So two genuinely different states whose only difference was *which player held a tile*
+(e.g. `...|p1:1|p2:6` vs `...|p1:6|p2:1`, same board, same turn) produced the SAME hash. The
+ordering-only TT survived this (a collision only gives a bad move-ordering hint, never a wrong
+value) -- which is exactly why the shipped engine stayed correct. The value-TT returns the cached
+value, so a collision returned the *other* state's value -> the ~6% wrong-EXACT.
+
+**Fix** (`bitboard.cpp` `applyHashDelta`, `zobrist.cpp` `getTileCountHash`): maintain the
+full-hash invariant incrementally -- on each move XOR (1) the board tile, (2) the CONSTANT
+`playerHash[P1]^playerHash[P2]` side-to-move delta, (3) the mover's hand-count term
+`tileCountHashes[mover][val][oldCount]`-> `[newCount]`. Self-inverse, so make/unmake restore it.
+
+**How it was found:** brute-force oracle (`verifyTrueValue`) caught a wrong returned EXACT at a tiny
+3-empty node; it reproduced ONLY in the full search (not isolation) => window/path dependent; a
+store-time verifier found NO wrong store <=5 empties => the wrong entry came from a *different*
+position hitting the same slot+key => a hash collision; a canonicalized collision detector printed
+the swapped-hands pair above. Mechanism understood, then fixed (no guessing -- per the rule below).
+
+**Proven:** `bench/difftest-valuett.cjs` — value-TT == pure alpha-beta on 200 random positions
+e=4..10 (ID-on AND no-ID) + the 3 historical fixtures (e=9 539, e=11 -56, e=10 1243) + a
+hash-invariant sweep (incremental hash == full recompute, 0 drift). `gate.cjs`, `difftest.cjs`,
+`difftest-threads.cjs` all still PASS. Measured node reduction: **e=11 9.65x** (454.5M->47.1M),
+e=10 2.41x — the depth-13 lever, recovered.
+
+**Still gated OFF by default** (`useValueTT=false`). Remaining integration: (1) enable it on the
+single-thread WASM solve path; (2) for the native THREADED root-split the shared TT now carries
+VALUES, so a torn read can corrupt a value -> add the Hyatt lockless-XOR slot (or per-thread TTs)
+before turning value-TT on there; (3) clear the server disk cache if it is keyed by the numeric hash.
+
 ## Why this matters for depth 13
 Node counts roughly ~7-10x per extra empty for all-different tiles.
 - 12-empty today (ordering-only): ~1.17B nodes, ~81s on 8 cores.

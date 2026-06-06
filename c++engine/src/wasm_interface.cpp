@@ -209,7 +209,13 @@ extern "C" const char* wasmMinimaxFindBestMove(int depth, int timeLimitMs) {
         return result.c_str();
     }
 
-    auto searchResult = minimax::findBestMove(*g_board, depth, timeLimitMs);
+    // Value-TT ON: WASM is single-threaded, so the value-returning TT is the proven-correct,
+    // ~2-10x-fewer-nodes path (verified == pure alpha-beta in bench/difftest-valuett.cjs).
+    minimax::SearchConfig config;
+    config.maxDepth = depth;
+    config.timeLimitMs = timeLimitMs;
+    config.useValueTT = true;
+    auto searchResult = minimax::findBestMove(*g_board, config);
 
     // Build JSON response
     result = "{";
@@ -242,6 +248,7 @@ extern "C" const char* wasmMinimaxFindBestMoveStream(int depth, int timeLimitMs)
     config.maxDepth = depth;
     config.timeLimitMs = timeLimitMs;
     config.streamProgress = true;
+    config.useValueTT = true;   // single-threaded WASM -> proven-correct value-TT (fewer nodes)
 
     auto searchResult = minimax::findBestMove(*g_board, config);
 
@@ -253,6 +260,28 @@ extern "C" const char* wasmMinimaxFindBestMoveStream(int depth, int timeLimitMs)
     result += "\"nodes\":" + std::to_string(searchResult.nodesSearched) + ",";
     result += "\"timeMs\":" + std::to_string(searchResult.timeMs) + ",";
     result += "\"timeout\":" + std::string(searchResult.timeout ? "true" : "false");
+    result += "}";
+    return result.c_str();
+}
+
+// TRACK 1 debugging: solve with configurable TT mode. useValueTT=1 -> the value-returning TT
+// (the path being made correct); useID=0 -> disable iterative deepening (single full-depth pass).
+extern "C" const char* wasmMinimaxFindBestMoveCfg(int depth, int timeLimitMs, int useValueTT, int useID) {
+    static std::string result;
+    if (!g_board) { result = "{\"error\":\"Not initialized\"}"; return result.c_str(); }
+    minimax::SearchConfig config;
+    config.maxDepth = depth;
+    config.timeLimitMs = timeLimitMs;
+    config.useValueTT = (useValueTT != 0);
+    config.verifyExact = (useValueTT == 3);  // 3 => also assert incremental hash == full recompute
+    config.useIterativeDeepening = (useID != 0);
+    auto searchResult = minimax::findBestMove(*g_board, config);
+    result = "{";
+    result += "\"hexId\":" + std::to_string(searchResult.bestMove.hexId) + ",";
+    result += "\"tileValue\":" + std::to_string(searchResult.bestMove.tileValue) + ",";
+    result += "\"score\":" + std::to_string(searchResult.score) + ",";
+    result += "\"depth\":" + std::to_string(searchResult.depth) + ",";
+    result += "\"nodes\":" + std::to_string(searchResult.nodesSearched);
     result += "}";
     return result.c_str();
 }
@@ -322,6 +351,10 @@ std::string wasmMinimaxFindBestMoveNoTTStr(int depth, int timeLimitMs) {
     return std::string(wasmMinimaxFindBestMoveNoTT(depth, timeLimitMs));
 }
 
+std::string wasmMinimaxFindBestMoveCfgStr(int depth, int timeLimitMs, int useValueTT, int useID) {
+    return std::string(wasmMinimaxFindBestMoveCfg(depth, timeLimitMs, useValueTT, useID));
+}
+
 // ============================================================================
 // Emscripten Bindings (using std::string - no raw pointers)
 // ============================================================================
@@ -344,5 +377,6 @@ EMSCRIPTEN_BINDINGS(hexuki_module) {
     function("minimaxFindBestMove", &wasmMinimaxFindBestMoveStr);
     function("minimaxFindBestMoveStream", &wasmMinimaxFindBestMoveStreamStr);
     function("minimaxFindBestMoveNoTT", &wasmMinimaxFindBestMoveNoTTStr);
+    function("minimaxFindBestMoveCfg", &wasmMinimaxFindBestMoveCfgStr);
     function("cleanup", &wasmCleanup);
 }

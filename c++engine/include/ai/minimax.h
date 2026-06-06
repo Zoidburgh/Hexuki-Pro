@@ -87,6 +87,12 @@ struct SearchConfig {
     bool useIterativeDeepening = true;  // Start shallow, go deeper
     bool useMoveOrdering = true;    // Order moves to improve pruning
     bool useTranspositionTable = true;  // Cache positions
+    bool useValueTT = false;        // TRACK 1 (off by default = shipped ordering-only TT). When
+                                    // true the TT also RETURNS cached values/bound cutoffs (the
+                                    // speed lever being debugged). Kept behind this flag so the
+                                    // shipped engine is unchanged until it's proven correct.
+    bool verifyExact = false;       // Debug: assert the incremental hash == full recompute at every
+                                    // node (catches Zobrist drift -- the value-TT correctness bug).
     size_t ttSizeMB = 256;          // Transposition table size (fixed; eviction on collision)
     bool verbose = false;           // Print search info
     bool streamProgress = false;    // Emit a machine-readable "@PROGRESS" line per completed

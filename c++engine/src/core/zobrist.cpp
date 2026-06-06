@@ -55,6 +55,11 @@ uint64_t Zobrist::getPlayerHash(int player) {
     return playerHashes[player - 1];  // player is 1-2, array is 0-1
 }
 
+uint64_t Zobrist::getTileCountHash(int playerIdx, int tileValue, int count) {
+    if (!initialized) initialize();
+    return tileCountHashes[playerIdx][tileValue][count];  // playerIdx 0-1, tileValue 1-9, count 0-9
+}
+
 uint64_t Zobrist::hash(const HexukiBitboard& board) {
     if (!initialized) initialize();
 
