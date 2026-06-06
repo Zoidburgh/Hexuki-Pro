@@ -36,3 +36,7 @@ bench/engine/
 bench/engine-*/
 bench/runs/
 c++engine/wasm_node/
+
+# Native toolchain (portable MinGW) — local, do not commit (262MB)
+tools/
+native/
