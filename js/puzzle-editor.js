@@ -887,6 +887,7 @@ async function serverSolve(position, onProgress) {
     if (!jobId) throw new Error(start.error || 'server did not start a job');
     currentSolveJob = { jobId, cancelled: false };
 
+    let lastDepth = 0;  // only report each depth ONCE (we poll faster than depths complete)
     while (true) {
         await sleep(400);
         if (currentSolveJob && currentSolveJob.cancelled) {
@@ -894,7 +895,7 @@ async function serverSolve(position, onProgress) {
             return shape(c.best, c.solver);
         }
         const s = await fetch(`${SOLVE_SERVER}/jobs/${jobId}`).then(r => r.json());
-        if (s.best && onProgress) onProgress(s.best.depth, s.best.score);
+        if (s.best && onProgress && s.best.depth !== lastDepth) { lastDepth = s.best.depth; onProgress(s.best.depth, s.best.score); }
         if (s.status === 'done') return shape(s.best, s.solver);
         if (s.status === 'cancelled') return shape(s.best, s.solver);
         if (s.status === 'error') throw new Error(s.error || 'server solve error');
