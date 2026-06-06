@@ -863,6 +863,7 @@ function toWasmShape(best) {
         hexId: best.bestMove.hexId, tileValue: best.bestMove.tileValue,
         score: best.score, depth: best.depth,
         nodes: best.nodes, timeMs: best.timeMs, timeout: best.timeout,
+        totalNodes: best.totalNodes, totalMs: best.totalMs, // cumulative across all depth passes
     };
 }
 
@@ -990,7 +991,7 @@ async function testWithMinimax() {
             bestMove: `H${result.hexId + 1}+${result.tileValue}`,
             score: result.score,
             timedOut: result.timeout || result.depth < emptyHexes,
-            nodesExplored: (result.nodes || result.nodesExplored) ? (result.nodes || result.nodesExplored).toLocaleString() : 'N/A'
+            nodesExplored: (result.totalNodes ?? result.nodes ?? result.nodesExplored) ? (result.totalNodes ?? result.nodes ?? result.nodesExplored).toLocaleString() : 'N/A'
         });
 
         // Try to make the move
@@ -1243,8 +1244,10 @@ function sleep(ms) {
 // COMPLETED. A timed-out search returns the last completed (shallower) depth, whose value
 // is a depth-limited HEURISTIC -- not the true endgame value. Never label that a solve.
 function logMinimaxSearch(position, emptyHexes, result, game) {
-    const nodes = result.nodes || result.nodesExplored || 0;
-    const ms = result.timeMs || 0;
+    // Prefer cumulative totals (server anytime-search runs several depth passes); the WASM
+    // path has no totals, so its single internal-ID nodes/time ARE the total.
+    const nodes = result.totalNodes ?? result.nodes ?? result.nodesExplored ?? 0;
+    const ms = result.totalMs ?? result.timeMs ?? 0;
     const nps = ms > 0.05 ? Math.round(nodes / (ms / 1000)).toLocaleString() + ' nodes/sec' : 'instant';
     const diffP1 = game.currentPlayer === 1 ? result.score : -result.score;
     const outcome = diffP1 > 0 ? `P1 wins by ${diffP1}` : (diffP1 < 0 ? `P2 wins by ${-diffP1}` : 'exact draw');

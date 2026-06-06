@@ -22,9 +22,13 @@ const path = require('path');
     for (let h = 0; h < 19; h++) if (m.getTileValue(h) === 0) empties++;
 
     let last = null;
+    let totalNodes = 0;   // accumulated across every depth pass (the real work done)
+    let totalMs = 0;
     for (let d = 1; d <= empties; d++) {
         m.loadPosition(position);                       // fresh internal ID to depth d
         const r = JSON.parse(m.minimaxFindBestMove(d, 0x7fffffff)); // 0x7fffffff ms = effectively no cap
+        totalNodes += (r.nodes || 0);
+        totalMs += (r.timeMs || 0);
         last = {
             bestMove: { hexId: r.hexId, tileValue: r.tileValue },
             score: r.score,
@@ -32,8 +36,10 @@ const path = require('path');
             empties,
             timeout: !!r.timeout,
             complete: !r.timeout && r.depth >= empties, // a real solve = reached game end
-            nodes: r.nodes,
+            nodes: r.nodes,                             // this depth pass
             timeMs: r.timeMs,
+            totalNodes,                                 // cumulative across all passes so far
+            totalMs,
         };
         parentPort.postMessage({ progress: last });
         if (last.complete) break;                       // reached game end -> fully solved, stop
