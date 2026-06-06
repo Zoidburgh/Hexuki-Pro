@@ -319,55 +319,80 @@ static SearchResult findBestMoveRootSplit(HexukiBitboard& board, const SearchCon
     if (rootMoves.empty()) { result.score = evaluate(board); result.bestMove = Move(); return result; }
 
     TranspositionTable tt(config.ttSizeMB);     // shared; ordering-only -> races are benign
-    std::atomic<int> globalAlpha{ -INF };        // best score found so far across all workers
     const int N = std::max(1, std::min(config.threads, (int)rootMoves.size()));
-    const int searchDepth = config.maxDepth - 1;
 
-    std::vector<int>  bestScore(N, -INF);
-    std::vector<Move> bestMove(N);
+    Move bestMove = rootMoves[0];
+    int bestScore = -INF;
+    long long totalNodes = 0;
 
-    auto worker = [&](int t) {
-        HexukiBitboard b = board;                // own copy
-        KillerMoves killers;
-        HistoryTable history;
-        long long nodes = 0;
-        int localBest = -INF;
-        Move localMove = rootMoves[t % rootMoves.size()];
-        for (int mi = t; mi < (int)rootMoves.size(); mi += N) {
-            const Move& move = rootMoves[mi];
-            // Prune against the best found anywhere so far (valid: a higher alpha only rejects
-            // moves <= the global best; a better move still exceeds it and is searched exactly).
-            int alpha = std::max(localBest, globalAlpha.load(std::memory_order_relaxed));
-            b.makeMove(move);
-            int score = -alphaBeta(b, searchDepth, -INF, -alpha, tt, nodes, startTime,
-                                   config.timeLimitMs, killers, history, 1);
-            b.unmakeMove(move);
-            // Record ONLY a real improvement over the global best -- i.e. score strictly exceeds
-            // the alpha we searched against. Such a move was searched with an open upper window,
-            // so its score is EXACT, and it's the new global maximum. A move with score <= alpha
-            // was pruned/bounded (not better than the best found elsewhere) -> never the answer.
-            if (score > alpha) {
-                localBest = score; localMove = move;
-                int g = globalAlpha.load(std::memory_order_relaxed);
-                while (score > g && !globalAlpha.compare_exchange_weak(g, score, std::memory_order_relaxed)) {}
-            }
+    // Iterative deepening, where EACH depth is a parallel root split (each worker fully searches a
+    // subset of the root moves to depth d; a shared atomic alpha prunes across workers). The
+    // shared ordering-only TT carries good-move hints from depth d to d+1; we also search the
+    // previous best move first so the global alpha rises early (better pruning). @PROGRESS is
+    // emitted per completed depth -> the server gets live progress, and on cancel (process kill)
+    // the last reported depth is the best-so-far. Correct by construction: the final depth's
+    // combine is the serial root loop distributed.
+    for (int depth = 1; depth <= config.maxDepth; depth++) {
+        if (depth > 1) {  // search last depth's best move first (front of the list)
+            auto it = std::find(rootMoves.begin(), rootMoves.end(), bestMove);
+            if (it != rootMoves.end()) std::rotate(rootMoves.begin(), it, it + 1);
         }
-        bestScore[t] = localBest;
-        bestMove[t]  = localMove;
-    };
 
-    std::vector<std::thread> pool;
-    pool.reserve(N - 1);
-    for (int t = 1; t < N; t++) pool.emplace_back(worker, t);
-    worker(0);                                   // this thread does worker 0
-    for (auto& th : pool) th.join();
+        std::atomic<int> globalAlpha{ -INF };
+        std::vector<int>  tBest(N, -INF);
+        std::vector<Move> tMove(N);
+        std::vector<long long> tNodes(N, 0);
 
-    int best = -INF; Move move = rootMoves[0];
-    for (int t = 0; t < N; t++) if (bestScore[t] > best) { best = bestScore[t]; move = bestMove[t]; }
+        auto worker = [&](int t) {
+            HexukiBitboard b = board;                // own copy
+            KillerMoves killers;
+            HistoryTable history;
+            long long nodes = 0;
+            int localBest = -INF;
+            Move localMove = rootMoves[t % rootMoves.size()];
+            for (int mi = t; mi < (int)rootMoves.size(); mi += N) {
+                const Move& move = rootMoves[mi];
+                int alpha = std::max(localBest, globalAlpha.load(std::memory_order_relaxed));
+                b.makeMove(move);
+                int score = -alphaBeta(b, depth - 1, -INF, -alpha, tt, nodes, startTime,
+                                       config.timeLimitMs, killers, history, 1);
+                b.unmakeMove(move);
+                // Record only a real improvement (score strictly exceeds the alpha searched
+                // against) -> it was searched exactly and is the new global max, so the reported
+                // move is always optimal, never a pruned bound.
+                if (score > alpha) {
+                    localBest = score; localMove = move;
+                    int g = globalAlpha.load(std::memory_order_relaxed);
+                    while (score > g && !globalAlpha.compare_exchange_weak(g, score, std::memory_order_relaxed)) {}
+                }
+            }
+            tBest[t] = localBest; tMove[t] = localMove; tNodes[t] = nodes;
+        };
 
-    result.score = best;
-    result.bestMove = move;
+        std::vector<std::thread> pool;
+        pool.reserve(N - 1);
+        for (int t = 1; t < N; t++) pool.emplace_back(worker, t);
+        worker(0);
+        for (auto& th : pool) th.join();
+
+        int dBest = -INF; Move dMove = rootMoves[0]; long long dNodes = 0;
+        for (int t = 0; t < N; t++) { dNodes += tNodes[t]; if (tBest[t] > dBest) { dBest = tBest[t]; dMove = tMove[t]; } }
+        bestMove = dMove; bestScore = dBest; totalNodes += dNodes;
+
+        if (config.streamProgress) {
+            long long elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - startTime).count();
+            std::cout << "@PROGRESS " << depth << " " << bestScore << " "
+                      << bestMove.hexId << " " << bestMove.tileValue << " "
+                      << totalNodes << " " << elapsed << std::endl;
+        }
+        if (std::abs(bestScore) > MATE_SCORE - 100) break;
+    }
+
+    result.score = bestScore;
+    result.bestMove = bestMove;
     result.depth = config.maxDepth;
+    result.nodesSearched = totalNodes;
     result.timeMs = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - startTime).count();
     return result;
