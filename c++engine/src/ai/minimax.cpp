@@ -10,6 +10,15 @@
 #include <vector>
 #include <mutex>
 #endif
+#if defined(HEXUKI_THREADS) && defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX            // keep std::min/std::max usable (windows.h would #define min/max)
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 namespace hexuki {
 namespace minimax {
@@ -361,6 +370,65 @@ int quiescence(
 }
 
 #ifdef HEXUKI_THREADS
+// ----------------------------------------------------------------------------
+// P-core affinity (hybrid CPUs). Pure SCHEDULING -- cannot change any value; it only decides
+// WHICH logical processors the root-split workers run on. On a P/E hybrid (e.g. Core Ultra), the
+// per-depth join() barrier lets a slow E-core straggler dominate wall-clock, so we pin workers to
+// the performance cores. Everything degrades to a no-op if detection fails or it's not Windows.
+// ----------------------------------------------------------------------------
+// Ordered list of group-0 logical-processor indices, performance cores (highest EfficiencyClass)
+// FIRST, then efficiency cores. Empty if unknown. We pin worker t to coreOrder[t] (1:1, distinct
+// cores) so: (a) at high thread counts every core stays busy -- full throughput, no oversubscription
+// or migration; (b) at low thread counts the workers land on the fast P-cores first. Pure
+// scheduling: which core a thread runs on can never change the value the search computes.
+static std::vector<int> detectCoreOrder() {
+#if defined(_WIN32)
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &len);
+    if (len == 0) return {};
+    std::vector<unsigned char> buf(len);
+    if (!GetLogicalProcessorInformationEx(RelationProcessorCore,
+            reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buf.data()), &len)) return {};
+    std::vector<std::pair<int,int>> cores;  // (efficiencyClass, procIndex)
+    for (DWORD off = 0; off < len; ) {
+        auto* info = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(buf.data() + off);
+        if (info->Relationship == RelationProcessorCore) {
+            for (WORD g = 0; g < info->Processor.GroupCount; g++) {
+                if (info->Processor.GroupMask[g].Group != 0) continue;
+                uint64_t m = (uint64_t)info->Processor.GroupMask[g].Mask;
+                for (int b = 0; b < 64; b++) if (m & (1ull << b))
+                    cores.push_back({ (int)info->Processor.EfficiencyClass, b });
+            }
+        }
+        off += info->Size;
+    }
+    std::sort(cores.begin(), cores.end(),
+              [](const auto& a, const auto& b){ return a.first != b.first ? a.first > b.first : a.second < b.second; });
+    std::vector<int> order;
+    order.reserve(cores.size());
+    for (auto& c : cores) order.push_back(c.second);
+    return order;
+#else
+    return {};
+#endif
+}
+
+// Pin the calling thread to the single logical processor `cpuIndex` (no-op if <0 or off-Windows).
+static inline void pinThreadToCpu(int cpuIndex) {
+#if defined(_WIN32)
+    if (cpuIndex >= 0 && cpuIndex < 64) SetThreadAffinityMask(GetCurrentThread(), (DWORD_PTR)(1ull << cpuIndex));
+#else
+    (void)cpuIndex;
+#endif
+}
+
+// Recommended auto worker count: all logical processors (using every core gave the best throughput
+// in practice; the static root split needs the extra workers to stay busy). Falls back to 1.
+int recommendedThreads() {
+    unsigned hc = std::thread::hardware_concurrency();
+    return hc > 0 ? (int)hc : 1;
+}
+
 // ============================================================================
 // Root-split parallel search (native build only)
 // ============================================================================
@@ -387,6 +455,10 @@ static SearchResult findBestMoveRootSplit(HexukiBitboard& board, const SearchCon
     TranspositionTable tt(config.ttSizeMB);     // shared; lockless XOR slots -> value races can't corrupt
     const int N = std::max(1, std::min(config.threads, (int)rootMoves.size()));
 
+    // 1:1 distinct-core placement, P-cores first (see detectCoreOrder). Worker t pins to
+    // coreOrder[t]; empty => no pinning (current OS behavior). Scheduling only -- never a value.
+    const std::vector<int> coreOrder = detectCoreOrder();
+
     Move bestMove = rootMoves[0];
     int bestScore = -INF;
     long long totalNodes = 0;
@@ -410,6 +482,7 @@ static SearchResult findBestMoveRootSplit(HexukiBitboard& board, const SearchCon
         std::vector<long long> tNodes(N, 0);
 
         auto worker = [&](int t) {
+            if (!coreOrder.empty()) pinThreadToCpu(coreOrder[t % (int)coreOrder.size()]);  // 1:1, P-first
             HexukiBitboard b = board;                // own copy
             KillerMoves killers;
             HistoryTable history;

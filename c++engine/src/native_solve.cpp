@@ -50,7 +50,9 @@ int main(int argc, char** argv) {
     // Root-split parallel workers: --threads N, else all hardware threads. (Note: streaming
     // progress is only emitted by the single-threaded iterative-deepening path; the root-split
     // path returns the final result without per-depth @PROGRESS.)
-    config.threads = (threadsArg > 0) ? threadsArg : std::max(1u, std::thread::hardware_concurrency());
+    // Auto (--threads 0) -> the P-core count on a hybrid CPU (workers get pinned to those cores in
+    // the root-split, avoiding E-core stragglers at the per-depth barrier); explicit N is honored.
+    config.threads = (threadsArg > 0) ? threadsArg : minimax::recommendedThreads();
     // Value-TT ON at every thread count: the shared TT now uses lockless XOR-checksum slots, so a
     // concurrent write can never make a probe return a corrupted value (a torn read fails the
     // checksum and is a miss). ~2-10x fewer nodes; verified == pure alpha-beta by difftest-threads.

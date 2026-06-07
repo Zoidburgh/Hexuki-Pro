@@ -136,6 +136,13 @@ SearchResult findBestMove(HexukiBitboard& board, const SearchConfig& config = Se
 SearchResult findBestMove(HexukiBitboard& board, int depth, int timeLimitMs = 30000);
 
 /**
+ * Recommended auto worker count for the root-split (native/threaded build): the number of
+ * performance cores on a hybrid CPU, else all logical processors. Defined only when built with
+ * HEXUKI_THREADS (the native build); the WASM build is single-threaded and never calls it.
+ */
+int recommendedThreads();
+
+/**
  * Killer Moves Heuristic
  * Tracks moves that recently caused beta cutoffs at each depth
  */
