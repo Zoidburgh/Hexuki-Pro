@@ -565,51 +565,75 @@ static SearchResult findBestMoveRootSplit(HexukiBitboard& board, const SearchCon
         int dBest; Move dMove; long long dNodes;
         while (true) {
             std::atomic<int> globalAlpha{ aLow };
-            std::vector<int>  tBest(N, -INF);
-            std::vector<Move> tMove(N);
-            std::vector<long long> tNodes(N, 0);
 
-            auto worker = [&](int t) {
-                if (!coreOrder.empty()) pinThreadToCpu(coreOrder[t % (int)coreOrder.size()]);  // 1:1, P-first
-                HexukiBitboard b = board;                // own copy
-                KillerMoves killers;
-                HistoryTable history;
-                long long nodes = 0;
-                int localBest = -INF;
-                Move localMove = rootMoves[t % rootMoves.size()];
-                for (int mi = t; mi < (int)rootMoves.size(); mi += N) {
-                    int alpha = std::max(localBest, globalAlpha.load(std::memory_order_relaxed));
-                    if (alpha >= aHigh) break;   // already fail-high -> stop (don't search with alpha>=beta)
-                    const Move& move = rootMoves[mi];
-                    b.makeMove(move);
-                    int score = -alphaBeta(b, depth - 1, -aHigh, -alpha, tt, nodes, startTime,
-                                           config.timeLimitMs, killers, history, 1);
-                    b.unmakeMove(move);
-                    // Record only a real improvement (score strictly exceeds the alpha searched
-                    // against) -> it was searched exactly and is the new global max, so the reported
-                    // move is always optimal, never a pruned bound.
-                    if (score > alpha) {
-                        localBest = score; localMove = move;
-                        int g = globalAlpha.load(std::memory_order_relaxed);
-                        while (score > g && !globalAlpha.compare_exchange_weak(g, score, std::memory_order_relaxed)) {}
+            // YOUNG BROTHERS WAIT: search the first (rotated previous-best) move ALONE to a tight
+            // value first, then seed globalAlpha with it before splitting the rest. The "younger
+            // brothers" are then searched against a strong bound -> far fewer redundant parallel
+            // nodes. Its PV subtree also fills the shared TT, speeding the siblings. Still exactly
+            // the serial root loop (move0 first, then the rest) distributed -> correct by construction.
+            long long n0 = 0;
+            int score0;
+            {
+                HexukiBitboard b0 = board;
+                KillerMoves k0; HistoryTable h0;
+                b0.makeMove(rootMoves[0]);
+                score0 = -alphaBeta(b0, depth - 1, -aHigh, -aLow, tt, n0, startTime,
+                                    config.timeLimitMs, k0, h0, 1);
+                b0.unmakeMove(rootMoves[0]);
+            }
+            if (score0 > aLow) globalAlpha.store(score0, std::memory_order_relaxed);
+
+            dBest = score0; dMove = rootMoves[0]; dNodes = n0;
+
+            // Split the REMAINING moves only if move0 didn't already fail high (>=aHigh = a cutoff).
+            if (score0 < aHigh) {
+                std::atomic<int> nextIdx{ 1 };          // dynamic work queue: grab the next root move
+                std::vector<int>  tBest(N, -INF);
+                std::vector<Move> tMove(N);
+                std::vector<long long> tNodes(N, 0);
+
+                auto worker = [&](int t) {
+                    if (!coreOrder.empty()) pinThreadToCpu(coreOrder[t % (int)coreOrder.size()]);  // 1:1, P-first
+                    HexukiBitboard b = board;            // own copy
+                    KillerMoves killers;
+                    HistoryTable history;
+                    long long nodes = 0;
+                    int localBest = -INF;
+                    Move localMove = rootMoves[0];
+                    for (;;) {
+                        int mi = nextIdx.fetch_add(1, std::memory_order_relaxed);  // work-stealing: no idle threads
+                        if (mi >= (int)rootMoves.size()) break;
+                        int alpha = std::max(localBest, globalAlpha.load(std::memory_order_relaxed));
+                        if (alpha >= aHigh) break;   // already fail-high -> stop (don't search with alpha>=beta)
+                        const Move& move = rootMoves[mi];
+                        b.makeMove(move);
+                        int score = -alphaBeta(b, depth - 1, -aHigh, -alpha, tt, nodes, startTime,
+                                               config.timeLimitMs, killers, history, 1);
+                        b.unmakeMove(move);
+                        // Record only a real improvement (score strictly exceeds the alpha searched
+                        // against) -> searched exactly, the new global max -> reported move is optimal.
+                        if (score > alpha) {
+                            localBest = score; localMove = move;
+                            int g = globalAlpha.load(std::memory_order_relaxed);
+                            while (score > g && !globalAlpha.compare_exchange_weak(g, score, std::memory_order_relaxed)) {}
+                        }
+                        if (localBest >= aHigh) break;  // fail high -> stop this worker (re-search wider)
                     }
-                    if (localBest >= aHigh) break;  // fail high -> stop this worker (re-search wider)
-                }
-                tBest[t] = localBest; tMove[t] = localMove; tNodes[t] = nodes;
-            };
+                    tBest[t] = localBest; tMove[t] = localMove; tNodes[t] = nodes;
+                };
 
-            std::vector<std::thread> pool;
-            pool.reserve(N - 1);
-            for (int t = 1; t < N; t++) pool.emplace_back(worker, t);
-            worker(0);
-            for (auto& th : pool) th.join();
+                std::vector<std::thread> pool;
+                pool.reserve(N - 1);
+                for (int t = 1; t < N; t++) pool.emplace_back(worker, t);
+                worker(0);
+                for (auto& th : pool) th.join();
 
-            dBest = -INF; dMove = rootMoves[0]; dNodes = 0;
-            for (int t = 0; t < N; t++) { dNodes += tNodes[t]; if (tBest[t] > dBest) { dBest = tBest[t]; dMove = tMove[t]; } }
+                for (int t = 0; t < N; t++) { dNodes += tNodes[t]; if (tBest[t] > dBest) { dBest = tBest[t]; dMove = tMove[t]; } }
+            }
 
-            // fail low: no worker beat aLow -> widen the floor and re-run. fail high: someone reached
-            // aHigh (a bound, not exact) -> widen the ceiling. Re-center from the prev score; the
-            // final widen reaches the full window, so the accepted dBest is always exact.
+            // fail low: nothing beat aLow -> widen the floor and re-run. fail high: best reached aHigh
+            // (a bound, not exact) -> widen the ceiling. Re-center from the prev score; the final widen
+            // reaches the full window, so the accepted dBest is always exact.
             if (dBest <= aLow && aLow > -INF) { delta += delta; aLow = bestScore - delta; if (aLow <= -MATE_SCORE) aLow = -INF; continue; }
             if (dBest >= aHigh && aHigh < INF) { delta += delta; aHigh = bestScore + delta; if (aHigh >= MATE_SCORE) aHigh = INF; continue; }
             break;  // exact (aLow < dBest < aHigh, or full window)

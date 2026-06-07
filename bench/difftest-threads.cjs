@@ -12,14 +12,15 @@ const solve = (pos, threads) =>
 (async () => {
   const m = await F(); m.initialize();
   let tested = 0, valFails = 0, moveFails = 0;
-  for (let seed = 1; seed <= 200 && tested < 22; seed++) {
-    const target = 6 + (seed % 4); // 6..9
+  for (let seed = 1; seed <= 600 && tested < 30; seed++) {
+    const target = 8 + (seed % 4); // 8..11 (deeper -> stresses the parallel split + aspiration + YBW)
     m.reset();
-    let g = seed * 3 + 1;
-    while (empt(m) > target && g++ < 60) {
+    let step = 0;
+    while (empt(m) > target) {
       const mv = JSON.parse(m.getValidMoves()); if (!mv.length) break;
-      const c = mv[(g * 31 + seed) % mv.length];
-      if (!m.makeMove(c.h, c.t)) { for (const x of mv) if (m.makeMove(x.h, x.t)) break; }
+      const c = mv[((step * 31 + seed * 17 + 7) >>> 0) % mv.length];
+      if (!m.makeMove(c.h, c.t)) { let ok = false; for (const x of mv) if (m.makeMove(x.h, x.t)) { ok = true; break; } if (!ok) break; }
+      step++;
     }
     if (empt(m) !== target) continue;
     const pos = m.savePosition();
