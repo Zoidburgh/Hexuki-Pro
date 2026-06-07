@@ -108,6 +108,8 @@ struct SearchConfig {
                                     // shipped engine is unchanged until it's proven correct.
     bool verifyExact = false;       // Debug: assert the incremental hash == full recompute at every
                                     // node (catches Zobrist drift -- the value-TT correctness bug).
+    bool orderStats = false;        // Debug (single-thread): count first-move beta cutoffs to measure
+                                    // move-ordering quality. Read via getOrderCut*(). No behavior change.
     bool useAspiration = false;     // Iterative-deepening aspiration windows (narrow band around the
                                     // previous depth's score, re-search wider on a fail). Saves ~30%
                                     // nodes and is CORRECT with the ordering-only TT, but currently
@@ -147,6 +149,11 @@ SearchResult findBestMove(HexukiBitboard& board, int depth, int timeLimitMs = 30
  * HEXUKI_THREADS (the native build); the WASM build is single-threaded and never calls it.
  */
 int recommendedThreads();
+
+// Move-ordering stats from the most recent orderStats-enabled search (first-move beta cutoffs and
+// total beta cutoffs). first/total near 1.0 => ordering already searches the best move first.
+long long getOrderCutFirst();
+long long getOrderCutTotal();
 
 /**
  * Killer Moves Heuristic

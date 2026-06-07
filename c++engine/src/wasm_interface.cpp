@@ -277,13 +277,16 @@ extern "C" const char* wasmMinimaxFindBestMoveCfg(int depth, int timeLimitMs, in
     config.verifyExact = (useValueTT == 3);  // 3 => also assert incremental hash == full recompute
     config.useIterativeDeepening = (useID & 1) != 0;
     config.useAspiration = (useID & 2) != 0;
+    config.orderStats = true;                // collect move-ordering quality stats (single-thread)
     auto searchResult = minimax::findBestMove(*g_board, config);
     result = "{";
     result += "\"hexId\":" + std::to_string(searchResult.bestMove.hexId) + ",";
     result += "\"tileValue\":" + std::to_string(searchResult.bestMove.tileValue) + ",";
     result += "\"score\":" + std::to_string(searchResult.score) + ",";
     result += "\"depth\":" + std::to_string(searchResult.depth) + ",";
-    result += "\"nodes\":" + std::to_string(searchResult.nodesSearched);
+    result += "\"nodes\":" + std::to_string(searchResult.nodesSearched) + ",";
+    result += "\"cutFirst\":" + std::to_string(minimax::getOrderCutFirst()) + ",";
+    result += "\"cutTotal\":" + std::to_string(minimax::getOrderCutTotal());
     result += "}";
     return result.c_str();
 }

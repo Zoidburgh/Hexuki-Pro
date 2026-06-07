@@ -4,6 +4,7 @@
 #include <iostream>
 #include <limits>
 #include <string>
+#include <cstdlib>
 #ifdef HEXUKI_THREADS
 #include <thread>
 #include <atomic>
@@ -54,6 +55,12 @@ static bool g_useValueTT = false;
 // default; turned on by the value-TT difftest. g_firstBadLogged limits output to the first offender.
 static bool g_verifyExact = false;
 static bool g_firstBadLogged = false;
+
+// Move-ordering quality stats (single-thread analysis only). g_cutFirst/g_cutTotal = the fraction
+// of beta cutoffs that happened on the FIRST move tried -> the standard measure of how good the move
+// ordering is (near 1.0 = ordering already finds the best move first; lower = headroom to improve).
+static bool g_orderStats = false;
+static long long g_cutTotal = 0, g_cutFirst = 0;
 
 // Pack a TTEntry into a single 64-bit word for the lockless XOR-checksum slot. Stored entries
 // always have depth >= 1 (stores happen at depth>=1 nodes), so the depth bits make `packed` nonzero
@@ -136,6 +143,9 @@ void TranspositionTable::clear() {
 // ============================================================================
 // Evaluation Function
 // ============================================================================
+
+long long getOrderCutFirst() { return g_cutFirst; }
+long long getOrderCutTotal() { return g_cutTotal; }
 
 int evaluate(const HexukiBitboard& board) {
     // Get actual scores for both players
@@ -306,6 +316,7 @@ int alphaBeta(
     Move bestMove = moves[0];
 
     // Search all moves
+    int moveIdx = 0;
     for (const auto& move : moves) {
         board.makeMove(move);
         int score = -alphaBeta(board, depth - 1, -beta, -alpha, tt, nodesSearched, startTime, timeLimitMs,
@@ -320,10 +331,12 @@ int alphaBeta(
 
         // Beta cutoff
         if (alpha >= beta) {
+            if (g_orderStats) { g_cutTotal++; if (moveIdx == 0) g_cutFirst++; }  // ordering-quality stat
             killers.update(ply, bestMove);  // Store killer move
             history.update(bestMove, depth);  // Update history
             break;
         }
+        moveIdx++;
     }
 
     // Flag the stored entry against the ORIGINAL window (not the mutated alpha):
@@ -456,8 +469,9 @@ static SearchResult findBestMoveRootSplit(HexukiBitboard& board, const SearchCon
     const int N = std::max(1, std::min(config.threads, (int)rootMoves.size()));
 
     // 1:1 distinct-core placement, P-cores first (see detectCoreOrder). Worker t pins to
-    // coreOrder[t]; empty => no pinning (current OS behavior). Scheduling only -- never a value.
-    const std::vector<int> coreOrder = detectCoreOrder();
+    // coreOrder[t]; empty => no pinning (let the OS scheduler decide). Scheduling only -- never a
+    // value. Escape hatch: set HEXUKI_NO_PIN=1 to disable pinning (A/B vs the OS scheduler).
+    const std::vector<int> coreOrder = std::getenv("HEXUKI_NO_PIN") ? std::vector<int>{} : detectCoreOrder();
 
     Move bestMove = rootMoves[0];
     int bestScore = -INF;
@@ -551,6 +565,7 @@ SearchResult findBestMove(HexukiBitboard& board, const SearchConfig& config) {
     g_ttEnabled = config.useTranspositionTable;  // false => pure alpha-beta ground-truth oracle
     g_useValueTT = config.useValueTT;
     g_verifyExact = config.verifyExact; g_firstBadLogged = false;
+    g_orderStats = config.orderStats; if (g_orderStats) { g_cutTotal = 0; g_cutFirst = 0; }
 
     auto startTime = std::chrono::steady_clock::now();
 
