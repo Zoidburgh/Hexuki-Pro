@@ -267,7 +267,7 @@ int quiescence(
  * Better move ordering = more alpha-beta cutoffs = faster search
  * Uses killer move and history heuristics for fast ordering
  */
-void orderMoves(std::vector<Move>& moves, const TTEntry* ttEntry, const KillerMoves& killers, const HistoryTable& history, int ply);
+void orderMoves(std::vector<Move>& moves, const HexukiBitboard& board, const TTEntry* ttEntry, const KillerMoves& killers, const HistoryTable& history, int ply);
 
 /**
  * Simple evaluation function

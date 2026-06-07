@@ -184,63 +184,90 @@ int evaluate(const HexukiBitboard& board) {
 // Move Ordering
 // ============================================================================
 
-void orderMoves(std::vector<Move>& moves, const TTEntry* ttEntry,
+// hexId -> the P1 (down-right \) and P2 (down-left /) scoring chain it lies on. Every hex is on
+// exactly one of each (verified from P1_CHAINS/P2_CHAINS). Built once, lazily.
+static int s_hexToP1Chain[NUM_HEXES];
+static int s_hexToP2Chain[NUM_HEXES];
+static bool s_chainMapBuilt = false;
+static void buildChainMap() {
+    for (int c = 0; c < P1_CHAIN_COUNT; c++)
+        for (int k = 0; k < P1_CHAIN_LENGTHS[c]; k++) s_hexToP1Chain[P1_CHAINS[c][k]] = c;
+    for (int c = 0; c < P2_CHAIN_COUNT; c++)
+        for (int k = 0; k < P2_CHAIN_LENGTHS[c]; k++) s_hexToP2Chain[P2_CHAINS[c][k]] = c;
+    s_chainMapBuilt = true;
+}
+// Scale for the chain-impact ordering term. W=1 measured best: consistently fewer nodes with no
+// regressions; higher weights overwhelmed the history signal and hurt some positions. env
+// HEXUKI_IMPACT_W overrides for A/B tuning. (Note: the WASM build uses this compiled default.)
+static int g_impactWeight = 1;
+
+void orderMoves(std::vector<Move>& moves, const HexukiBitboard& board, const TTEntry* ttEntry,
                 const KillerMoves& killers, const HistoryTable& history, int ply) {
-    // KILLER MOVE OPTIMIZATION: Use fast heuristics instead of makeMove/evaluate
-    // Eliminates 40-60M makeMove calls at depth 10 (2-3x speedup)
-    // GUARANTEED SAFE: Same best move, same score, just better move ordering
+    // KILLER MOVE OPTIMIZATION: fast heuristics instead of makeMove/evaluate.
+    // GUARANTEED SAFE: this only permutes the move list -- it can NEVER change a returned score.
 
-    std::vector<std::pair<int, size_t>> moveScores;
-    moveScores.reserve(moves.size());
+#ifndef HEXUKI_NO_CHAINORD
+    // CHAIN-IMPACT signal: scoring is the PRODUCT of placed tiles along each diagonal. Placing tile
+    // V on hex H multiplies H's mover-direction chain (product P) and opponent-direction chain
+    // (product Q) by V, so the immediate (mover - opp) score change is (V-1)*(P-Q): a high tile where
+    // the mover's own diagonal is strong and the opponent's is weak. Compute the 10 chain products of
+    // the CURRENT board once, then score each move by this delta.
+    if (!s_chainMapBuilt) buildChainMap();
+    int p1prod[P1_CHAIN_COUNT], p2prod[P2_CHAIN_COUNT];
+    for (int c = 0; c < P1_CHAIN_COUNT; c++) {
+        int pr = 1;
+        for (int k = 0; k < P1_CHAIN_LENGTHS[c]; k++) { int v = board.getTileValue(P1_CHAINS[c][k]); if (v > 0) pr *= v; }
+        p1prod[c] = pr;
+    }
+    for (int c = 0; c < P2_CHAIN_COUNT; c++) {
+        int pr = 1;
+        for (int k = 0; k < P2_CHAIN_LENGTHS[c]; k++) { int v = board.getTileValue(P2_CHAINS[c][k]); if (v > 0) pr *= v; }
+        p2prod[c] = pr;
+    }
+    const bool p1ToMove = (board.getCurrentPlayer() == PLAYER_1);
+#endif
 
-    for (size_t i = 0; i < moves.size(); i++) {
-        const Move& move = moves[i];
-        int score = 0;
+    // Per-call local scratch (NOT thread_local: a 2nd thread_local-with-destructor tripped MinGW's
+    // TLS-cleanup race under spawned std::threads -> heap corruption. Plain locals are crash-safe).
+    std::vector<std::pair<int, Move>> scored;
+    scored.reserve(moves.size());
 
-        // Priority 1: TT move (proven best from previous search)
+    for (const Move& move : moves) {
+        int score;
+        // Priority 1: TT move (proven best from a previous search).
         if (ttEntry && move == ttEntry->bestMove) {
             score = 10000000;
         }
-        // Priority 2: Killer moves (recently caused beta cutoffs)
+        // Priority 2: killer moves (recently caused beta cutoffs).
         else if (killers.isKiller(ply, move)) {
             score = 1000000 + move.tileValue * 10;
         }
-        // Priority 3: History + heuristics
+        // Priority 3: history + static move strength.
         else {
-            // History heuristic (moves that were historically good)
             score = history.getScore(move);
-
-            // High-value tiles are usually better
+#ifndef HEXUKI_NO_CHAINORD
+            const int h = move.hexId, V = move.tileValue;
+            const int myProd = p1ToMove ? p1prod[s_hexToP1Chain[h]] : p2prod[s_hexToP2Chain[h]];
+            const int opProd = p1ToMove ? p2prod[s_hexToP2Chain[h]] : p1prod[s_hexToP1Chain[h]];
+            score += (V - 1) * (myProd - opProd) * g_impactWeight;
+#else
             score += move.tileValue * 100;
-
-            // Center control bonus (hexes near center are strategic)
-            if (move.hexId == 9) {
-                score += 50;  // Center hex
-            } else if (move.hexId == 4 || move.hexId == 6 || move.hexId == 7 ||
-                       move.hexId == 11 || move.hexId == 12) {
-                score += 30;  // Adjacent to center
-            }
-
-            // Corner bonus (can create multiple chains)
-            if (move.hexId == 0 || move.hexId == 2 || move.hexId == 16 || move.hexId == 18) {
-                score += 20;
-            }
+#endif
+            // Positional tiebreakers (small).
+            if (move.hexId == 9) score += 50;
+            else if (move.hexId == 4 || move.hexId == 6 || move.hexId == 7 ||
+                     move.hexId == 11 || move.hexId == 12) score += 30;
+            if (move.hexId == 0 || move.hexId == 2 || move.hexId == 16 || move.hexId == 18) score += 20;
+            // Keep Priority-3 strictly below the killer tier so the tiers stay ordered.
+            if (score > 999000) score = 999000;
+            else if (score < -999000) score = -999000;
         }
-
-        moveScores.push_back({score, i});
+        scored.push_back({score, move});
     }
 
-    // Sort by score (descending) and reorder moves
-    std::sort(moveScores.begin(), moveScores.end(),
+    std::sort(scored.begin(), scored.end(),
               [](const auto& a, const auto& b) { return a.first > b.first; });
-
-    // Reorder moves based on sorted scores
-    std::vector<Move> sortedMoves;
-    sortedMoves.reserve(moves.size());
-    for (const auto& pair : moveScores) {
-        sortedMoves.push_back(moves[pair.second]);
-    }
-    moves = sortedMoves;
+    for (size_t i = 0; i < scored.size(); i++) moves[i] = scored[i].second;
 }
 
 // ============================================================================
@@ -353,7 +380,7 @@ int alphaBeta(
 
     // Order moves: try the TT's remembered best move first whenever any entry exists.
     // Safe now that the entry flag is computed against alphaOrig (below).
-    orderMoves(moves, ttHit ? &ttEntry : nullptr, killers, history, ply);
+    orderMoves(moves, board, ttHit ? &ttEntry : nullptr, killers, history, ply);
 
     int bestScore = -INF;
     Move bestMove = moves[0];
@@ -535,12 +562,14 @@ int recommendedThreads() {
 // a move against a higher alpha only prunes moves that are provably <= the global best, so the
 // winning move is still searched exactly. The answer is the max over all workers.
 static SearchResult findBestMoveRootSplit(HexukiBitboard& board, const SearchConfig& config) {
-    // Build BOTH lazily-initialized globals now, single-threaded, before any worker touches them.
+    // Build ALL lazily-initialized globals now, single-threaded, before any worker touches them.
     HexukiBitboard::ensureLegalTable();
     Zobrist::initialize();
+    if (!s_chainMapBuilt) buildChainMap();   // ordering chain map -- build before the workers race on it
 
     g_ttEnabled = config.useTranspositionTable;
     g_useValueTT = config.useValueTT;
+    if (const char* w = std::getenv("HEXUKI_IMPACT_W")) g_impactWeight = std::atoi(w);
     g_verifyExact = config.verifyExact; g_firstBadLogged = false;
     auto startTime = std::chrono::steady_clock::now();
 
@@ -695,6 +724,7 @@ SearchResult findBestMove(HexukiBitboard& board, const SearchConfig& config) {
 
     g_ttEnabled = config.useTranspositionTable;  // false => pure alpha-beta ground-truth oracle
     g_useValueTT = config.useValueTT;
+    if (const char* w = std::getenv("HEXUKI_IMPACT_W")) g_impactWeight = std::atoi(w);
     g_verifyExact = config.verifyExact; g_firstBadLogged = false;
     g_verifyReturns = config.verifyReturns;
     g_orderStats = config.orderStats; if (g_orderStats) { g_cutTotal = 0; g_cutFirst = 0; }
@@ -750,7 +780,7 @@ SearchResult findBestMove(HexukiBitboard& board, const SearchConfig& config) {
 
             // Order moves based on previous iteration's best
             if (depth > 1) {
-                orderMoves(moves, nullptr, killers, history, 0);
+                orderMoves(moves, board, nullptr, killers, history, 0);
             }
 
             bool depthTimedOut = false;
@@ -852,7 +882,7 @@ SearchResult findBestMove(HexukiBitboard& board, const SearchConfig& config) {
         int beta = INF;
 
         if (config.useMoveOrdering) {
-            orderMoves(moves, nullptr, killers, history, 0);
+            orderMoves(moves, board, nullptr, killers, history, 0);
         }
 
         for (const auto& move : moves) {
