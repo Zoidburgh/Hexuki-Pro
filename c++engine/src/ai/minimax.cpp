@@ -358,12 +358,34 @@ int alphaBeta(
     int bestScore = -INF;
     Move bestMove = moves[0];
 
-    // Search all moves
+    // Search all moves. PRINCIPAL VARIATION SEARCH: the first (best-ordered) move gets the full
+    // [alpha,beta] window; every later move is first probed with a NULL window [alpha,alpha+1] -- a
+    // cheap "is this better than alpha?" test that produces far more cutoffs. Only a move that beats
+    // alpha (and could be a new PV) is re-searched with the full window. Provably EXACT: the
+    // null-window scan can only prove a move is <= alpha (which never changes the max); any move that
+    // might exceed alpha is fully re-searched, so the returned value is identical to plain alpha-beta.
     int moveIdx = 0;
     for (const auto& move : moves) {
         board.makeMove(move);
-        int score = -alphaBeta(board, depth - 1, -beta, -alpha, tt, nodesSearched, startTime, timeLimitMs,
-                              killers, history, ply + 1);
+        int score;
+#ifdef HEXUKI_NO_PVS
+        score = -alphaBeta(board, depth - 1, -beta, -alpha, tt, nodesSearched, startTime, timeLimitMs,
+                           killers, history, ply + 1);
+#else
+        if (moveIdx == 0) {
+            score = -alphaBeta(board, depth - 1, -beta, -alpha, tt, nodesSearched, startTime, timeLimitMs,
+                               killers, history, ply + 1);
+        } else {
+            // Scout with a null window around alpha.
+            score = -alphaBeta(board, depth - 1, -alpha - 1, -alpha, tt, nodesSearched, startTime, timeLimitMs,
+                               killers, history, ply + 1);
+            // The scout said "maybe better than alpha" but not a proven cutoff -> re-search exactly.
+            if (score > alpha && score < beta) {
+                score = -alphaBeta(board, depth - 1, -beta, -alpha, tt, nodesSearched, startTime, timeLimitMs,
+                                   killers, history, ply + 1);
+            }
+        }
+#endif
         board.unmakeMove(move);
 
         if (score > bestScore) {
