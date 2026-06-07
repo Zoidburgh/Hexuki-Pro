@@ -110,6 +110,8 @@ struct SearchConfig {
                                     // node (catches Zobrist drift -- the value-TT correctness bug).
     bool orderStats = false;        // Debug (single-thread): count first-move beta cutoffs to measure
                                     // move-ordering quality. Read via getOrderCut*(). No behavior change.
+    bool verifyReturns = false;     // Debug (single-thread): brute-force-check every value-TT return
+                                    // vs truth -> logs @BADRET for the first wrong one (aspiration hunt).
     bool useAspiration = false;     // Iterative-deepening aspiration windows (narrow band around the
                                     // previous depth's score, re-search wider on a fail). Saves ~30%
                                     // nodes and is CORRECT with the ordering-only TT, but currently

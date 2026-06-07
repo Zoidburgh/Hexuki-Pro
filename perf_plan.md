@@ -94,17 +94,18 @@ loop:
 - **#1 P-core affinity: DONE & shipped** (commit ee4c817). 1:1 distinct-core pinning, P-cores first,
   auto=all logical procs. Correct (difftest-threads PASS). Outcome: a throughput STABILIZER, not a
   speedup -- the node count is the wall, so on its own it doesn't cut the hard-position times.
-- **#2 aspiration windows: IMPLEMENTED, NOT SHIPPED (gated OFF).** Saves ~30% nodes and is CORRECT
-  with the ordering-only TT, BUT under-reports values when combined with the VALUE-TT (the shipped
-  config). Localized: `asp+ordering == oracle` (right), `asp+valueTT < oracle` (wrong), `valueTT
-  alone == oracle` (right). A narrow ROOT window + same-depth re-search exposes a value-TT
-  interaction not yet root-caused. Per the cardinal rule it stays OFF. `bench/difftest-aspiration.cjs`
-  is the guard (must reach 0 disagreements with value-TT before it can be enabled). NOTE: this does
-  NOT threaten the shipped engine -- shipping uses FULL root windows, which difftest-valuett proves
-  correct over 200 positions; only the narrow-root-window regime is affected.
-  - Next root-cause step (mirror the hash-bug method): re-add the `verifyTrueValue` oracle behind a
-    debug flag and, during an aspiration+valueTT solve on a failing position, log the first value-TT
-    return (EXACT or bound) that disagrees with brute force -> that pinpoints the bad entry/window.
+- **#2 aspiration windows: FIXED & SHIPPED** (single-thread editor/WASM + native, AND the multi-core
+  root-split). Root cause of the earlier under-reporting: the aspiration root loop raised `alpha` as
+  moves improved but never broke when `alpha >= beta`. With the full window (beta==INF) that never
+  fires, but with aspiration's FINITE beta a strong move pushed alpha past beta and the next move was
+  searched with an INVERTED window (alpha>beta) -> it stored garbage bounds -> wrong values. Found by
+  the same method as the hash bug: a `verifyReturns` brute-force oracle logged the first value-TT
+  store/return inconsistent with truth (`@BADSTORE flag=UPPER stored=1074 true=1599 origWin[1674,1485]`
+  -- the inverted window was the smoking gun). Fix: one line, `if (alpha >= beta) break;` in BOTH the
+  single-thread root loop and each parallel worker (the worker also guards `if (alpha >= aHigh) break`
+  before searching). Proven: `difftest-aspiration` 0/200, `difftest-threads` 0 fails, gate + valuett
+  all PASS. Measured: e=12 stable-score 670M->72M nodes (~6.5x), balanced 2.8B monster 2813M->1581M
+  (~2x). `verifyReturns` (Cfg useValueTT==4 -> @BADRET/@BADSTORE) kept as a permanent debug oracle.
 
 ## Order of work (each step independently green before the next)
 1. #1 P-core affinity -> difftest-threads PASS + timing measured -> commit.

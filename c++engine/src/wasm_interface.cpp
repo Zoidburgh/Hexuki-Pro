@@ -215,6 +215,7 @@ extern "C" const char* wasmMinimaxFindBestMove(int depth, int timeLimitMs) {
     config.maxDepth = depth;
     config.timeLimitMs = timeLimitMs;
     config.useValueTT = true;
+    config.useAspiration = true;   // proven == pure alpha-beta (difftest-aspiration), ~26% fewer nodes
     auto searchResult = minimax::findBestMove(*g_board, config);
 
     // Build JSON response
@@ -248,7 +249,8 @@ extern "C" const char* wasmMinimaxFindBestMoveStream(int depth, int timeLimitMs)
     config.maxDepth = depth;
     config.timeLimitMs = timeLimitMs;
     config.streamProgress = true;
-    config.useValueTT = true;   // single-threaded WASM -> proven-correct value-TT (fewer nodes)
+    config.useValueTT = true;     // single-threaded WASM -> proven-correct value-TT (fewer nodes)
+    config.useAspiration = true;  // + aspiration windows (proven == oracle, ~26% fewer nodes)
 
     auto searchResult = minimax::findBestMove(*g_board, config);
 
@@ -274,7 +276,8 @@ extern "C" const char* wasmMinimaxFindBestMoveCfg(int depth, int timeLimitMs, in
     config.maxDepth = depth;
     config.timeLimitMs = timeLimitMs;
     config.useValueTT = (useValueTT != 0);
-    config.verifyExact = (useValueTT == 3);  // 3 => also assert incremental hash == full recompute
+    config.verifyExact = (useValueTT == 3);    // 3 => also assert incremental hash == full recompute
+    config.verifyReturns = (useValueTT == 4);  // 4 => brute-force-check every value-TT return (@BADRET)
     config.useIterativeDeepening = (useID & 1) != 0;
     config.useAspiration = (useID & 2) != 0;
     config.orderStats = true;                // collect move-ordering quality stats (single-thread)

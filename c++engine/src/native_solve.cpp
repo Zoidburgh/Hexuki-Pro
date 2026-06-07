@@ -57,6 +57,8 @@ int main(int argc, char** argv) {
     // concurrent write can never make a probe return a corrupted value (a torn read fails the
     // checksum and is a miss). ~2-10x fewer nodes; verified == pure alpha-beta by difftest-threads.
     config.useValueTT = true;
+    config.useAspiration = true;  // proven == oracle (difftest-aspiration); used by the single-thread
+                                  // path now, and by the root-split once it honors it (below).
 
     auto r = minimax::findBestMove(board, config);
 

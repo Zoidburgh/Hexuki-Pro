@@ -62,6 +62,25 @@ static bool g_firstBadLogged = false;
 static bool g_orderStats = false;
 static long long g_cutTotal = 0, g_cutFirst = 0;
 
+// ASPIRATION-BUG HUNT (single-thread debug): verify every value-TT RETURN against brute force.
+static bool g_verifyReturns = false;
+
+// Brute-force negamax to `depth` (game end when depth >= empties). NO TT, NO alpha-beta -> the
+// undisputed true (depth-limited) value. Own board copy + allocating getValidMoves -> reentrant.
+static int verifyTrueValue(HexukiBitboard board, int depth) {
+    if (depth == 0 || board.isGameOver()) return evaluate(board);
+    std::vector<Move> mv = board.getValidMoves();
+    if (mv.empty()) return evaluate(board);
+    int best = -INF;
+    for (const auto& m : mv) {
+        board.makeMove(m);
+        int s = -verifyTrueValue(board, depth - 1);
+        board.unmakeMove(m);
+        if (s > best) best = s;
+    }
+    return best;
+}
+
 // Pack a TTEntry into a single 64-bit word for the lockless XOR-checksum slot. Stored entries
 // always have depth >= 1 (stores happen at depth>=1 nodes), so the depth bits make `packed` nonzero
 // -> data==0 unambiguously means "empty slot". Layout: score:32 | depth:5 | flag:2 | hexId:5 |
@@ -286,6 +305,30 @@ int alphaBeta(
         // TRACK 1 (g_useValueTT == true): also return cached values + take bound cutoffs (the
         // speed lever under debugging). This is the path being made correct; keep it flag-gated.
         if (g_useValueTT && ttEntry.depth >= depth) {
+            // Debug: check the entry we are about to RETURN against brute-force truth. EXACT must
+            // equal it; a returned LOWER bound must be <= true; a returned UPPER bound must be >= true.
+            if (g_verifyReturns && !g_firstBadLogged) {
+                int e = 0; for (int h = 0; h < 19; h++) if (!board.isHexOccupied(h)) e++;
+                if (e <= 6) {
+                    const bool willReturn =
+                        ttEntry.flag == TTEntry::EXACT ||
+                        (ttEntry.flag == TTEntry::LOWER_BOUND && ttEntry.score >= beta) ||
+                        (ttEntry.flag == TTEntry::UPPER_BOUND && ttEntry.score <= alpha);
+                    if (willReturn) {
+                        int tv = verifyTrueValue(board, ttEntry.depth);
+                        bool bad = (ttEntry.flag == TTEntry::EXACT       && ttEntry.score != tv)
+                                || (ttEntry.flag == TTEntry::LOWER_BOUND && tv < ttEntry.score)
+                                || (ttEntry.flag == TTEntry::UPPER_BOUND && tv > ttEntry.score);
+                        if (bad) {
+                            g_firstBadLogged = true;
+                            std::cout << "@BADRET flag=" << (int)ttEntry.flag << " stored=" << ttEntry.score
+                                      << " true=" << tv << " entryDepth=" << ttEntry.depth << " needDepth=" << depth
+                                      << " win[" << alpha << "," << beta << "] empties=" << e
+                                      << " pos=" << board.savePosition() << std::endl;
+                        }
+                    }
+                }
+            }
             if (ttEntry.flag == TTEntry::EXACT) {
                 return ttEntry.score;
             } else if (ttEntry.flag == TTEntry::LOWER_BOUND && ttEntry.score >= beta) {
@@ -346,6 +389,24 @@ int alphaBeta(
     TTEntry::Flag flag = (bestScore <= alphaOrig) ? TTEntry::UPPER_BOUND
                        : (bestScore >= beta)      ? TTEntry::LOWER_BOUND
                        : TTEntry::EXACT;
+
+    // Debug: catch the FIRST node that STORES a bound/value inconsistent with brute-force truth.
+    // EXACT must == true; a LOWER_BOUND must be <= true; an UPPER_BOUND must be >= true.
+    if (g_verifyReturns && !g_firstBadLogged) {
+        int e = 0; for (int h = 0; h < 19; h++) if (!board.isHexOccupied(h)) e++;
+        if (e <= 6) {
+            int tv = verifyTrueValue(board, depth);
+            bool bad = (flag == TTEntry::EXACT       && bestScore != tv)
+                    || (flag == TTEntry::LOWER_BOUND && tv < bestScore)
+                    || (flag == TTEntry::UPPER_BOUND && tv > bestScore);
+            if (bad) {
+                g_firstBadLogged = true;
+                std::cout << "@BADSTORE flag=" << (int)flag << " stored=" << bestScore << " true=" << tv
+                          << " depth=" << depth << " origWin[" << alphaOrig << "," << beta << "] empties=" << e
+                          << " pos=" << board.savePosition() << std::endl;
+            }
+        }
+    }
 
     // Store in transposition table
     tt.store(hash, TTEntry(bestScore, depth, flag, bestMove));
@@ -490,47 +551,71 @@ static SearchResult findBestMoveRootSplit(HexukiBitboard& board, const SearchCon
             if (it != rootMoves.end()) std::rotate(rootMoves.begin(), it, it + 1);
         }
 
-        std::atomic<int> globalAlpha{ -INF };
-        std::vector<int>  tBest(N, -INF);
-        std::vector<Move> tMove(N);
-        std::vector<long long> tNodes(N, 0);
+        // Aspiration around the previous depth's score (same scheme + accept-only-exact rule as the
+        // single-thread path): seed globalAlpha at aLow and cap every child at beta=aHigh; accept the
+        // combined best only if it lands strictly inside (aLow, aHigh), else widen the breached side
+        // and re-run the whole split. With the full window (aHigh==INF) it's the old behavior exactly.
+        const int ASPIRATION_MIN_DEPTH = 4;
+        const bool aspirate = config.useAspiration && depth >= ASPIRATION_MIN_DEPTH
+                              && std::abs(bestScore) < MATE_SCORE;
+        int delta = 96;
+        int aLow  = aspirate ? bestScore - delta : -INF;
+        int aHigh = aspirate ? bestScore + delta :  INF;
 
-        auto worker = [&](int t) {
-            if (!coreOrder.empty()) pinThreadToCpu(coreOrder[t % (int)coreOrder.size()]);  // 1:1, P-first
-            HexukiBitboard b = board;                // own copy
-            KillerMoves killers;
-            HistoryTable history;
-            long long nodes = 0;
-            int localBest = -INF;
-            Move localMove = rootMoves[t % rootMoves.size()];
-            for (int mi = t; mi < (int)rootMoves.size(); mi += N) {
-                const Move& move = rootMoves[mi];
-                int alpha = std::max(localBest, globalAlpha.load(std::memory_order_relaxed));
-                b.makeMove(move);
-                int score = -alphaBeta(b, depth - 1, -INF, -alpha, tt, nodes, startTime,
-                                       config.timeLimitMs, killers, history, 1);
-                b.unmakeMove(move);
-                // Record only a real improvement (score strictly exceeds the alpha searched
-                // against) -> it was searched exactly and is the new global max, so the reported
-                // move is always optimal, never a pruned bound.
-                if (score > alpha) {
-                    localBest = score; localMove = move;
-                    int g = globalAlpha.load(std::memory_order_relaxed);
-                    while (score > g && !globalAlpha.compare_exchange_weak(g, score, std::memory_order_relaxed)) {}
+        int dBest; Move dMove; long long dNodes;
+        while (true) {
+            std::atomic<int> globalAlpha{ aLow };
+            std::vector<int>  tBest(N, -INF);
+            std::vector<Move> tMove(N);
+            std::vector<long long> tNodes(N, 0);
+
+            auto worker = [&](int t) {
+                if (!coreOrder.empty()) pinThreadToCpu(coreOrder[t % (int)coreOrder.size()]);  // 1:1, P-first
+                HexukiBitboard b = board;                // own copy
+                KillerMoves killers;
+                HistoryTable history;
+                long long nodes = 0;
+                int localBest = -INF;
+                Move localMove = rootMoves[t % rootMoves.size()];
+                for (int mi = t; mi < (int)rootMoves.size(); mi += N) {
+                    int alpha = std::max(localBest, globalAlpha.load(std::memory_order_relaxed));
+                    if (alpha >= aHigh) break;   // already fail-high -> stop (don't search with alpha>=beta)
+                    const Move& move = rootMoves[mi];
+                    b.makeMove(move);
+                    int score = -alphaBeta(b, depth - 1, -aHigh, -alpha, tt, nodes, startTime,
+                                           config.timeLimitMs, killers, history, 1);
+                    b.unmakeMove(move);
+                    // Record only a real improvement (score strictly exceeds the alpha searched
+                    // against) -> it was searched exactly and is the new global max, so the reported
+                    // move is always optimal, never a pruned bound.
+                    if (score > alpha) {
+                        localBest = score; localMove = move;
+                        int g = globalAlpha.load(std::memory_order_relaxed);
+                        while (score > g && !globalAlpha.compare_exchange_weak(g, score, std::memory_order_relaxed)) {}
+                    }
+                    if (localBest >= aHigh) break;  // fail high -> stop this worker (re-search wider)
                 }
-            }
-            tBest[t] = localBest; tMove[t] = localMove; tNodes[t] = nodes;
-        };
+                tBest[t] = localBest; tMove[t] = localMove; tNodes[t] = nodes;
+            };
 
-        std::vector<std::thread> pool;
-        pool.reserve(N - 1);
-        for (int t = 1; t < N; t++) pool.emplace_back(worker, t);
-        worker(0);
-        for (auto& th : pool) th.join();
+            std::vector<std::thread> pool;
+            pool.reserve(N - 1);
+            for (int t = 1; t < N; t++) pool.emplace_back(worker, t);
+            worker(0);
+            for (auto& th : pool) th.join();
 
-        int dBest = -INF; Move dMove = rootMoves[0]; long long dNodes = 0;
-        for (int t = 0; t < N; t++) { dNodes += tNodes[t]; if (tBest[t] > dBest) { dBest = tBest[t]; dMove = tMove[t]; } }
-        bestMove = dMove; bestScore = dBest; totalNodes += dNodes;
+            dBest = -INF; dMove = rootMoves[0]; dNodes = 0;
+            for (int t = 0; t < N; t++) { dNodes += tNodes[t]; if (tBest[t] > dBest) { dBest = tBest[t]; dMove = tMove[t]; } }
+
+            // fail low: no worker beat aLow -> widen the floor and re-run. fail high: someone reached
+            // aHigh (a bound, not exact) -> widen the ceiling. Re-center from the prev score; the
+            // final widen reaches the full window, so the accepted dBest is always exact.
+            if (dBest <= aLow && aLow > -INF) { delta += delta; aLow = bestScore - delta; if (aLow <= -MATE_SCORE) aLow = -INF; continue; }
+            if (dBest >= aHigh && aHigh < INF) { delta += delta; aHigh = bestScore + delta; if (aHigh >= MATE_SCORE) aHigh = INF; continue; }
+            break;  // exact (aLow < dBest < aHigh, or full window)
+        }
+        totalNodes += dNodes;
+        bestMove = dMove; bestScore = dBest;
 
         if (config.streamProgress) {
             long long elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -565,6 +650,7 @@ SearchResult findBestMove(HexukiBitboard& board, const SearchConfig& config) {
     g_ttEnabled = config.useTranspositionTable;  // false => pure alpha-beta ground-truth oracle
     g_useValueTT = config.useValueTT;
     g_verifyExact = config.verifyExact; g_firstBadLogged = false;
+    g_verifyReturns = config.verifyReturns;
     g_orderStats = config.orderStats; if (g_orderStats) { g_cutTotal = 0; g_cutFirst = 0; }
 
     auto startTime = std::chrono::steady_clock::now();
@@ -652,6 +738,11 @@ SearchResult findBestMove(HexukiBitboard& board, const SearchConfig& config) {
                         bs = score; bm = move;
                         if (score > alpha) alpha = score;  // raise the window as moves improve
                     }
+                    // Beta cutoff at the root: with a finite aspiration beta, a move can reach it.
+                    // STOP here -- continuing would search later moves with alpha>beta (an inverted
+                    // window) which stores garbage bounds. bs>=aHigh below triggers the fail-high
+                    // re-search. (With the full window beta==INF this never fires -> old behavior.)
+                    if (alpha >= beta) break;
                 }
                 if (depthTimedOut) break;
 
