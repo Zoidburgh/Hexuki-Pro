@@ -597,8 +597,6 @@ SearchResult findBestMove(HexukiBitboard& board, const SearchConfig& config) {
         // Iterative deepening: search 1, 2, 3, ..., maxDepth
         for (int depth = 1; depth <= config.maxDepth; depth++) {
             long long nodesSearched = 0;
-            int alpha = -INF;
-            int beta = INF;
 
             Move currentBestMove;
             int currentBestScore = -INF;
@@ -608,30 +606,57 @@ SearchResult findBestMove(HexukiBitboard& board, const SearchConfig& config) {
                 orderMoves(moves, nullptr, killers, history, 0);
             }
 
-            // Search all moves at current depth
             bool depthTimedOut = false;
             long long elapsed = 0;
-            for (const auto& move : moves) {
-                board.makeMove(move);
-                int score = -alphaBeta(board, depth - 1, -beta, -alpha, tt, nodesSearched, startTime, config.timeLimitMs, killers, history, 1);
-                board.unmakeMove(move);
 
-                // Check if we timed out during this search
-                auto now = std::chrono::steady_clock::now();
-                elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count();
-                if (elapsed >= config.timeLimitMs) {
-                    depthTimedOut = true;
-                    break;
-                }
+            // Aspiration window around the PREVIOUS depth's score (bestScore). Searching a narrow
+            // [aLow,aHigh] yields far more cutoffs; we ACCEPT only a score strictly inside it (exact)
+            // and otherwise widen the breached side and re-search -- the final widen hits the full
+            // window, so the value is always exact. Disabled (full window, one pass = the old code)
+            // when the flag is off, at shallow depths, or once near mate.
+            const int ASPIRATION_MIN_DEPTH = 4;
+            const bool aspirate = config.useAspiration && depth >= ASPIRATION_MIN_DEPTH
+                                  && std::abs(bestScore) < MATE_SCORE;
+            int delta = 96;
+            int aLow  = aspirate ? bestScore - delta : -INF;
+            int aHigh = aspirate ? bestScore + delta :  INF;
 
-                if (score > currentBestScore) {
-                    currentBestScore = score;
-                    currentBestMove = move;
+            while (true) {
+                int alpha = aLow, beta = aHigh;
+                Move bm; int bs = -INF;
+                for (const auto& move : moves) {
+                    board.makeMove(move);
+                    int score = -alphaBeta(board, depth - 1, -beta, -alpha, tt, nodesSearched, startTime, config.timeLimitMs, killers, history, 1);
+                    board.unmakeMove(move);
 
-                    if (score > alpha) {
-                        alpha = score;
+                    auto now = std::chrono::steady_clock::now();
+                    elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - startTime).count();
+                    if (elapsed >= config.timeLimitMs) { depthTimedOut = true; break; }
+
+                    if (score > bs) {
+                        bs = score; bm = move;
+                        if (score > alpha) alpha = score;  // raise the window as moves improve
                     }
                 }
+                if (depthTimedOut) break;
+
+                // fail low: every move <= aLow -> true value <= aLow. Lower the floor and re-search.
+                if (bs <= aLow && aLow > -INF) {
+                    delta += delta;
+                    aLow = bs - delta;
+                    if (aLow <= -MATE_SCORE) aLow = -INF;
+                    continue;
+                }
+                // fail high: best move only proved >= aHigh (a bound). Raise the ceiling and re-search.
+                if (bs >= aHigh && aHigh < INF) {
+                    delta += delta;
+                    aHigh = bs + delta;
+                    if (aHigh >= MATE_SCORE) aHigh = INF;
+                    continue;
+                }
+                // exact: aLow < bs < aHigh (or full window) -> accept.
+                currentBestScore = bs; currentBestMove = bm;
+                break;
             }
 
             // If we timed out mid-depth, don't use this depth's results - use previous depth

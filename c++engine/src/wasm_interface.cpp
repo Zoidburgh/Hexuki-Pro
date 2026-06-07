@@ -264,8 +264,9 @@ extern "C" const char* wasmMinimaxFindBestMoveStream(int depth, int timeLimitMs)
     return result.c_str();
 }
 
-// TRACK 1 debugging: solve with configurable TT mode. useValueTT=1 -> the value-returning TT
-// (the path being made correct); useID=0 -> disable iterative deepening (single full-depth pass).
+// Differential-test entry: configurable search. useValueTT: 1=value-TT, 3=value-TT+hash-verify.
+// useID is a BITMASK: bit0 = iterative deepening, bit1 = aspiration windows. So useID=1 -> ID only,
+// useID=3 -> ID + aspiration, useID=0 -> single full-depth pass.
 extern "C" const char* wasmMinimaxFindBestMoveCfg(int depth, int timeLimitMs, int useValueTT, int useID) {
     static std::string result;
     if (!g_board) { result = "{\"error\":\"Not initialized\"}"; return result.c_str(); }
@@ -274,7 +275,8 @@ extern "C" const char* wasmMinimaxFindBestMoveCfg(int depth, int timeLimitMs, in
     config.timeLimitMs = timeLimitMs;
     config.useValueTT = (useValueTT != 0);
     config.verifyExact = (useValueTT == 3);  // 3 => also assert incremental hash == full recompute
-    config.useIterativeDeepening = (useID != 0);
+    config.useIterativeDeepening = (useID & 1) != 0;
+    config.useAspiration = (useID & 2) != 0;
     auto searchResult = minimax::findBestMove(*g_board, config);
     result = "{";
     result += "\"hexId\":" + std::to_string(searchResult.bestMove.hexId) + ",";

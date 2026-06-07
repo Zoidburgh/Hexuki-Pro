@@ -108,6 +108,12 @@ struct SearchConfig {
                                     // shipped engine is unchanged until it's proven correct.
     bool verifyExact = false;       // Debug: assert the incremental hash == full recompute at every
                                     // node (catches Zobrist drift -- the value-TT correctness bug).
+    bool useAspiration = false;     // Iterative-deepening aspiration windows (narrow band around the
+                                    // previous depth's score, re-search wider on a fail). Saves ~30%
+                                    // nodes and is CORRECT with the ordering-only TT, but currently
+                                    // UNDER-reports values when combined with the value-TT (a narrow
+                                    // root window exposes a value-TT interaction not yet root-caused).
+                                    // KEEP OFF until bench/difftest-aspiration.cjs passes with value-TT.
     size_t ttSizeMB = 256;          // Transposition table size (fixed; eviction on collision)
     bool verbose = false;           // Print search info
     bool streamProgress = false;    // Emit a machine-readable "@PROGRESS" line per completed

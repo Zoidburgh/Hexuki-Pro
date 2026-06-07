@@ -90,6 +90,22 @@ loop:
 
 ---
 
+## STATUS (2026-06)
+- **#1 P-core affinity: DONE & shipped** (commit ee4c817). 1:1 distinct-core pinning, P-cores first,
+  auto=all logical procs. Correct (difftest-threads PASS). Outcome: a throughput STABILIZER, not a
+  speedup -- the node count is the wall, so on its own it doesn't cut the hard-position times.
+- **#2 aspiration windows: IMPLEMENTED, NOT SHIPPED (gated OFF).** Saves ~30% nodes and is CORRECT
+  with the ordering-only TT, BUT under-reports values when combined with the VALUE-TT (the shipped
+  config). Localized: `asp+ordering == oracle` (right), `asp+valueTT < oracle` (wrong), `valueTT
+  alone == oracle` (right). A narrow ROOT window + same-depth re-search exposes a value-TT
+  interaction not yet root-caused. Per the cardinal rule it stays OFF. `bench/difftest-aspiration.cjs`
+  is the guard (must reach 0 disagreements with value-TT before it can be enabled). NOTE: this does
+  NOT threaten the shipped engine -- shipping uses FULL root windows, which difftest-valuett proves
+  correct over 200 positions; only the narrow-root-window regime is affected.
+  - Next root-cause step (mirror the hash-bug method): re-add the `verifyTrueValue` oracle behind a
+    debug flag and, during an aspiration+valueTT solve on a failing position, log the first value-TT
+    return (EXACT or bound) that disagrees with brute force -> that pinpoints the bad entry/window.
+
 ## Order of work (each step independently green before the next)
 1. #1 P-core affinity -> difftest-threads PASS + timing measured -> commit.
 2. #2 single-thread aspiration (flag) -> difftest-aspiration + valuett + gate PASS -> commit.
