@@ -412,12 +412,30 @@ bool HexukiBitboard::wouldBeMirrored(int subHexId, int subValue) const {
     return true;
 }
 
-// A move is forbidden when it turns an un-mirrored board into a mirrored one,
-// and only when both players hold identical tile sets (otherwise mirroring is
-// not a concern). Axis moves from an already-mirrored board stay legal.
+// The single tile value whose placement by `mover` would leave the two hands EQUAL afterward
+// (mover's hand minus that value == opponent's hand) -- i.e. the mover holds exactly one extra of
+// it. Returns -1 if there is no such value (hands already equal, or differ by more than one tile).
+int HexukiBitboard::equalizingValue(int mover) const {
+    const std::vector<int>& mh = (mover == PLAYER_1) ? p1AvailableTiles : p2AvailableTiles;
+    const std::vector<int>& oh = (mover == PLAYER_1) ? p2AvailableTiles : p1AvailableTiles;
+    int mc[MAX_TILE_VALUE + 1] = {}, oc[MAX_TILE_VALUE + 1] = {};
+    for (int t : mh) if (t >= 1 && t <= MAX_TILE_VALUE) mc[t]++;
+    for (int t : oh) if (t >= 1 && t <= MAX_TILE_VALUE) oc[t]++;
+    int v0 = -1;
+    for (int w = 1; w <= MAX_TILE_VALUE; w++) {
+        const int d = mc[w] - oc[w];
+        if (d == 0) continue;
+        if (d == 1 && v0 == -1) v0 = w;   // mover has exactly one extra of value w
+        else return -1;                    // any other imbalance -> no single equalizing tile
+    }
+    return v0;
+}
+
+// A move is forbidden iff it makes the board a perfect VERTICAL mirror AND leaves both players with
+// equal tiles afterward. Both are properties of the RESULTING state (no game history needed), so the
+// solver computes it identically to live play on any loaded position.
 bool HexukiBitboard::createsForbiddenSymmetry(int hexId, int tileValue) const {
-    if (!tilesAreIdentical) return false;
-    if (wouldBeMirrored(-1, 0)) return false;   // board already mirrored
+    if (tileValue != equalizingValue(currentPlayer)) return false;  // hands wouldn't be equal after
     return wouldBeMirrored(hexId, tileValue);
 }
 
@@ -510,10 +528,13 @@ void HexukiBitboard::getValidMovesInto(std::vector<Move>& moves) const {
         if (!seen && uniqueCount < 16) uniqueTileValues[uniqueCount++] = tile;
     }
 
-    // Anti-symmetry: only relevant when both players hold identical tiles AND the
-    // board isn't already mirrored (axis moves from a symmetric board stay legal).
-    // Stateless -> nothing in make/unmake to corrupt. Computed once per node.
-    const bool checkSymmetry = tilesAreIdentical && !wouldBeMirrored(-1, 0);
+    // Anti-symmetry (VERTICAL axis only -- it swaps P1's \ and P2's / scoring chains, so a vertical
+    // mirror is the degenerate equal-score state the rule prevents). A move is illegal iff it makes
+    // the board a perfect vertical mirror AND leaves both hands equal AFTERWARD. "Equal afterward"
+    // can hold for at most ONE tile value (the one the mover holds exactly one extra of), found once
+    // per node -- so only that value ever needs the mirror test. Pure state, no history -> the solver
+    // matches live play on any loaded position.
+    const int symValue = equalizingValue(currentPlayer);   // -1 if no move can equalize the hands
 
     // Legal hex LOCATIONS come from the precomputed table -- one lookup replaces
     // the per-hex adjacency + chain walk. The bit is set only for empty, legal hexes.
@@ -525,8 +546,8 @@ void HexukiBitboard::getValidMovesInto(std::vector<Move>& moves) const {
         // Try each unique tile value (avoids generating duplicate moves)
         for (int u = 0; u < uniqueCount; u++) {
             const int tileValue = uniqueTileValues[u];
-            // Reject a move that would make the board a perfect mirror
-            if (checkSymmetry && wouldBeMirrored(hexId, tileValue)) continue;
+            // Forbidden symmetry: the equalizing tile that would make the board a perfect vertical mirror.
+            if (tileValue == symValue && wouldBeMirrored(hexId, tileValue)) continue;
             moves.push_back(Move(hexId, tileValue));
         }
     }

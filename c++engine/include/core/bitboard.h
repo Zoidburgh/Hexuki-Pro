@@ -123,8 +123,9 @@ private:
     bool isBoardMirrored() const;  // Anti-symmetry check (legacy; superseded by wouldBeMirrored)
     // Stateless anti-symmetry: computed from board state, so there is NO make/unmake
     // state to corrupt (the old flag-based version's bug is structurally impossible here).
-    bool wouldBeMirrored(int subHexId, int subValue) const;        // mirror test; subHexId<0 = board as-is
-    bool createsForbiddenSymmetry(int hexId, int tileValue) const; // the full rule
+    bool wouldBeMirrored(int subHexId, int subValue) const;        // vertical mirror test; subHexId<0 = board as-is
+    int  equalizingValue(int mover) const;                         // tile that equalizes the hands, else -1
+    bool createsForbiddenSymmetry(int hexId, int tileValue) const; // full rule: vertical mirror + equal-after
 
     // Chain info structure (for affected chain tracking)
     struct ChainInfo {

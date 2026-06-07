@@ -557,11 +557,30 @@ class HexukiGameEngineAsymmetric {
         return true;
     }
 
-    // A move is forbidden if it turns an un-mirrored board into a mirrored one,
-    // and only when both players hold identical tile sets.
+    // The single tile value whose placement by `mover` (1 or 2) would leave both hands EQUAL
+    // afterward (mover's hand minus that value == opponent's hand) -- i.e. mover holds exactly one
+    // extra of it. Returns -1 if none (hands already equal, or differ by more than one tile).
+    equalizingValue(mover) {
+        const mh = mover === 1 ? this.player1Tiles : this.player2Tiles;
+        const oh = mover === 1 ? this.player2Tiles : this.player1Tiles;
+        const mc = new Array(10).fill(0), oc = new Array(10).fill(0);
+        for (const t of mh) if (t >= 1 && t <= 9) mc[t]++;
+        for (const t of oh) if (t >= 1 && t <= 9) oc[t]++;
+        let v0 = -1;
+        for (let w = 1; w <= 9; w++) {
+            const d = mc[w] - oc[w];
+            if (d === 0) continue;
+            if (d === 1 && v0 === -1) v0 = w;   // mover has exactly one extra of value w
+            else return -1;                      // any other imbalance -> no single equalizing tile
+        }
+        return v0;
+    }
+
+    // A move is forbidden iff it makes the board a perfect VERTICAL mirror AND leaves both players
+    // with equal tiles afterward. Both are properties of the RESULTING state (no game history), so
+    // this matches the solver on any loaded position.
     createsForbiddenSymmetry(hexId, tileValue) {
-        if (!this.tilesAreIdentical) return false;
-        if (this.wouldBeMirrored(-1, 0)) return false;  // already mirrored: axis moves legal
+        if (tileValue !== this.equalizingValue(this.currentPlayer)) return false;
         return this.wouldBeMirrored(hexId, tileValue);
     }
 
@@ -572,9 +591,10 @@ class HexukiGameEngineAsymmetric {
         const moves = [];
         const availableTiles = this.currentPlayer === 1 ? this.player1Tiles : this.player2Tiles;
 
-        // Anti-symmetry: only when tiles are identical and the board isn't already
-        // mirrored. Stateless -> nothing to corrupt. Computed once per call.
-        const checkSymmetry = this.tilesAreIdentical && !this.wouldBeMirrored(-1, 0);
+        // Anti-symmetry (vertical only): forbidden iff a move makes the board a perfect vertical
+        // mirror AND equalizes the hands afterward. That can hold for at most ONE tile value -- the
+        // equalizing one -- so only it needs the mirror test. Pure state -> matches the solver.
+        const symValue = this.equalizingValue(this.currentPlayer);   // -1 if no move can equalize
 
         for (let hexId = 0; hexId < 19; hexId++) {
             if (this.board[hexId].value !== null) continue;
@@ -582,8 +602,8 @@ class HexukiGameEngineAsymmetric {
             if (this.isMoveLegal(hexId)) {
                 // Try each available tile
                 for (let tileValue of availableTiles) {
-                    // Reject a move that would make the board a perfect mirror
-                    if (checkSymmetry && this.wouldBeMirrored(hexId, tileValue)) continue;
+                    // Reject the equalizing tile if it would make the board a perfect vertical mirror.
+                    if (tileValue === symValue && this.wouldBeMirrored(hexId, tileValue)) continue;
                     moves.push({ hexId, tileValue });
                 }
             }
