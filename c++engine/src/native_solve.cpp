@@ -59,6 +59,12 @@ int main(int argc, char** argv) {
     config.useValueTT = true;
     config.useAspiration = true;  // proven == oracle (difftest-aspiration); used by the single-thread
                                   // path now, and by the root-split once it honors it (below).
+    // Transposition table size scales with depth: deep solves visit far more distinct positions, so
+    // a 256MB table thrashes (evicting entries the value-TT needs -> lost pruning). Bigger keeps more
+    // of the useful entries. HEXUKI_TT_MB overrides (for A/B + memory-constrained boxes).
+    int ttMB = (empties >= 13) ? 4096 : (empties >= 12) ? 2048 : (empties >= 11) ? 1024 : 256;
+    if (const char* envv = std::getenv("HEXUKI_TT_MB")) { int v = std::atoi(envv); if (v >= 16) ttMB = v; }
+    config.ttSizeMB = (size_t)ttMB;
 
     auto r = minimax::findBestMove(board, config);
 
