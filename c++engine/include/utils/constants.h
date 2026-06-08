@@ -196,6 +196,39 @@ constexpr int VERTICAL_MIRROR_PAIRS[NUM_HEXES] = {
 constexpr int CENTER_COLUMN_HEXES[5] = {0, 4, 9, 14, 18};
 
 // ============================================================================
+// HORIZONTAL MIRROR PAIRS (anti-symmetry rule, top<->bottom reflection)
+// ============================================================================
+// Maps each hex ID to its horizontal mirror (reflect row across the center row 4). Like the vertical
+// mirror, this reflection swaps every P1 (\) scoring diagonal onto a P2 (/) diagonal, so a perfectly
+// horizontally-mirrored board forces P1==P2 -- the same score-degenerate draw the rule prevents.
+// Center row {8,9,10} maps to itself.
+//
+// REVERT: set FORBID_HORIZONTAL_SYMMETRY = false to restore vertical-only behaviour, then rebuild
+// WASM + native (mirror the JS flag in hexuki_game_engine_asymmetric.js).
+constexpr bool FORBID_HORIZONTAL_SYMMETRY = true;
+constexpr int HORIZONTAL_MIRROR_PAIRS[NUM_HEXES] = {
+    18,  // 0 → 18
+    16,  // 1 → 16
+    17,  // 2 → 17
+    13,  // 3 → 13
+    14,  // 4 → 14
+    15,  // 5 → 15
+    11,  // 6 → 11
+    12,  // 7 → 12
+    8,   // 8 → 8 (center row)
+    9,   // 9 → 9 (center row)
+    10,  // 10 → 10 (center row)
+    6,   // 11 → 6
+    7,   // 12 → 7
+    3,   // 13 → 3
+    4,   // 14 → 4
+    5,   // 15 → 5
+    1,   // 16 → 1
+    2,   // 17 → 2
+    0    // 18 → 0
+};
+
+// ============================================================================
 // SCORING CHAINS (diagonal lines)
 // ============================================================================
 

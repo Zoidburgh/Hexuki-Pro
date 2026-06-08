@@ -404,16 +404,26 @@ bool HexukiBitboard::isBoardMirrored() const {
 // Is the board perfectly vertically mirrored, treating subHexId as if it held
 // subValue? Pass subHexId = -1 to test the board exactly as it is. A pair counts
 // as "matched" only when both hexes are empty or both hold the same value.
-bool HexukiBitboard::wouldBeMirrored(int subHexId, int subValue) const {
+// Is the board a perfect mirror across the given pairing (treating subHexId as holding subValue)?
+bool HexukiBitboard::mirrorOnAxis(const int* pairs, int subHexId, int subValue) const {
     for (int hexId = 0; hexId < NUM_HEXES; hexId++) {
-        int mirrorHexId = VERTICAL_MIRROR_PAIRS[hexId];
-        if (mirrorHexId <= hexId) continue;  // skip center (self-mirror); visit each pair once
+        int mirrorHexId = pairs[hexId];
+        if (mirrorHexId <= hexId) continue;  // skip self-mirror axis; visit each pair once
         int v1 = (hexId == subHexId) ? subValue : hexValues[hexId];
         int v2 = (mirrorHexId == subHexId) ? subValue : hexValues[mirrorHexId];
         if ((v1 == 0) != (v2 == 0)) return false;          // one empty, one filled
         if (v1 != 0 && v2 != 0 && v1 != v2) return false;  // both filled, different
     }
     return true;
+}
+
+// A move is "mirroring" if it makes the board a perfect mirror on EITHER score-degenerate axis --
+// vertical, or (when enabled) horizontal. Both reflections swap P1's diagonals onto P2's, so either
+// one forces an equal-score draw. Vertical-only is restored by FORBID_HORIZONTAL_SYMMETRY=false.
+bool HexukiBitboard::wouldBeMirrored(int subHexId, int subValue) const {
+    if (mirrorOnAxis(VERTICAL_MIRROR_PAIRS, subHexId, subValue)) return true;
+    if (FORBID_HORIZONTAL_SYMMETRY && mirrorOnAxis(HORIZONTAL_MIRROR_PAIRS, subHexId, subValue)) return true;
+    return false;
 }
 
 // The single tile value whose placement by `mover` would leave the two hands EQUAL afterward

@@ -6,6 +6,11 @@
  * - Tests whether game balance is affected by tile distribution vs position
  */
 
+// Anti-symmetry: forbid horizontal (top<->bottom) mirrors in addition to vertical. Both reflections
+// force an equal-score draw. Set to false to revert to vertical-only (and FORBID_HORIZONTAL_SYMMETRY
+// in the C++ constants.h, then rebuild). Kept in sync with the C++ engine for the cross-check.
+const HEXUKI_FORBID_HORIZONTAL = true;
+
 class HexukiGameEngineAsymmetric {
     constructor() {
         this.reset();
@@ -115,6 +120,15 @@ class HexukiGameEngineAsymmetric {
             16: 17, // Col 1 ↔ Col 3
             17: 16,
             18: 18  // Center column
+        };
+
+        // Horizontal mirror pairs (top<->bottom reflection across the center row). Like the vertical
+        // mirror, this swaps every P1 diagonal onto a P2 diagonal -> a horizontally-mirrored board is
+        // also a forced draw. Center row {8,9,10} maps to itself. (Mirrors the C++ HORIZONTAL_MIRROR_PAIRS.)
+        this.horizontalMirrorPairs = {
+            0: 18, 1: 16, 2: 17, 3: 13, 4: 14, 5: 15, 6: 11, 7: 12,
+            8: 8, 9: 9, 10: 10,
+            11: 6, 12: 7, 13: 3, 14: 4, 15: 5, 16: 1, 17: 2, 18: 0
         };
 
         // Scoring chain definitions - SYMMETRIC straight diagonals
@@ -456,8 +470,11 @@ class HexukiGameEngineAsymmetric {
 
         this.moveCount++;
 
-        // Check if game ended (all 18 tiles placed)
-        if (this.moveCount >= 18) {
+        // Game ends when every IN-PLAY hex is filled (active-mask aware -> correct under blackouts,
+        // and also handles empty-center puzzles where 19 moves are possible). Default mask = all 19.
+        let activeOpen = 0;
+        for (let h = 0; h < 19; h++) if (((this.activeMask >> h) & 1) && this.board[h].value === null) activeOpen++;
+        if (activeOpen === 0) {
             this.gameEnded = true;
         }
 
@@ -552,18 +569,26 @@ class HexukiGameEngineAsymmetric {
     }
 
     // ── Stateless anti-symmetry (mirrors the C++ bitboard; no flag to corrupt) ──
-    // Is the board perfectly vertically mirrored, treating subHex as holding subVal?
-    // Pass subHex = -1 to test the board as-is. subVal is always a real tile (never null).
-    wouldBeMirrored(subHex, subVal) {
+    // Is the board a perfect mirror across `pairs`, treating subHex as holding subVal?
+    mirrorOnAxis(pairs, subHex, subVal) {
         for (let h = 0; h < 19; h++) {
-            const mh = this.verticalMirrorPairs[h];
-            if (mh <= h) continue;  // skip center (self-mirror); visit each pair once
+            const mh = pairs[h];
+            if (mh <= h) continue;  // skip self-mirror axis; visit each pair once
             const v1 = (h === subHex) ? subVal : this.board[h].value;
             const v2 = (mh === subHex) ? subVal : this.board[mh].value;
             if ((v1 === null) !== (v2 === null)) return false;          // one empty, one filled
             if (v1 !== null && v2 !== null && v1 !== v2) return false;  // both filled, different
         }
         return true;
+    }
+
+    // Mirroring on EITHER score-degenerate axis -- vertical, or (when enabled) horizontal. Both
+    // reflections force an equal-score draw. subHex = -1 tests the board as-is; subVal is a real tile.
+    // REVERT: set HEXUKI_FORBID_HORIZONTAL = false (top of file) to restore vertical-only.
+    wouldBeMirrored(subHex, subVal) {
+        if (this.mirrorOnAxis(this.verticalMirrorPairs, subHex, subVal)) return true;
+        if (HEXUKI_FORBID_HORIZONTAL && this.mirrorOnAxis(this.horizontalMirrorPairs, subHex, subVal)) return true;
+        return false;
     }
 
     // The single tile value whose placement by `mover` (1 or 2) would leave both hands EQUAL
