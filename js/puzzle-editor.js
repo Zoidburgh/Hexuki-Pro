@@ -9,6 +9,29 @@ let p2Tiles = [1,2,3,4,5,6,7,8,9];
 let startingPlayer = 1;
 let selectedTile = null;
 let wasmModule = null;
+let blackout = new Set();  // 0-indexed hexes that are "blacked out" (out of play / not scored)
+
+// The inner-7 beginner hexagon (the outer ring blacked out). 0-indexed.
+const OUTER_RING = [0, 1, 2, 3, 5, 8, 10, 13, 15, 16, 17, 18];
+
+// Active-hex mask from the blackout set (bit h set = hex h is in play). Mirrors the C++ engine.
+function activeMaskValue() {
+    let mask = (1 << 19) - 1;
+    blackout.forEach(h => { mask &= ~(1 << h); });
+    return mask >>> 0;
+}
+// Active empty hexes = the in-play hexes that still need a tile (drives required tile counts).
+function activeEmptyCount() {
+    let n = 0;
+    for (let h = 0; h < 19; h++) if (!blackout.has(h) && editorBoard[h] === null) n++;
+    return n;
+}
+// Tell the WASM engine which hexes are in play before any solve (no-op on older builds).
+function applyMaskToWasm() {
+    if (wasmModule && typeof wasmModule.setActiveHexes === 'function') {
+        wasmModule.setActiveHexes(activeMaskValue());
+    }
+}
 
 // Set initial board state: center tile = 1 (makes puzzle valid with 9 tiles each)
 editorBoard[9] = 1;  // hex 10 (center) gets tile 1
@@ -146,7 +169,13 @@ function createHexBoard() {
 function onHexClick(hexId) {
     const hexIndex = hexId - 1;  // Convert to 0-indexed
 
-    if (selectedTile === 0) {
+    if (selectedTile === 'blackout') {
+        // Toggle this hex in/out of play; blacking out also clears any tile on it.
+        if (blackout.has(hexIndex)) blackout.delete(hexIndex);
+        else { blackout.add(hexIndex); editorBoard[hexIndex] = null; }
+    } else if (blackout.has(hexIndex)) {
+        return;  // can't place/clear a tile on a blacked-out hex
+    } else if (selectedTile === 0) {
         // Clear mode
         editorBoard[hexIndex] = null;
     } else if (selectedTile !== null) {
@@ -181,9 +210,17 @@ function updateBoardDisplay() {
         const polygon = g.querySelector('polygon');
         const valueText = g.querySelector('.hex-text');
 
-        if (value !== null) {
+        if (blackout.has(index)) {
+            // Blacked-out hex (out of play)
+            polygon.setAttribute('fill', '#111');
+            polygon.setAttribute('stroke', '#000');
+            polygon.setAttribute('opacity', '0.85');
+            valueText.textContent = '';
+        } else if (value !== null) {
             // Hex has a tile
             polygon.setAttribute('fill', '#4a5568');
+            polygon.setAttribute('stroke', '#2c3e50');
+            polygon.setAttribute('opacity', '1');
             valueText.textContent = value;
             valueText.setAttribute('fill', 'white');
             valueText.setAttribute('font-size', '24');
@@ -191,6 +228,8 @@ function updateBoardDisplay() {
         } else {
             // Empty hex
             polygon.setAttribute('fill', '#ecf0f1');
+            polygon.setAttribute('stroke', '#2c3e50');
+            polygon.setAttribute('opacity', '1');
             valueText.textContent = '';
         }
     });
@@ -224,8 +263,44 @@ function setupTilePalette() {
         palette.appendChild(btn);
     }
 
+    // Blackout tool: select it, then click hexes to toggle them out of play (and back).
+    const boBtn = document.createElement('button');
+    boBtn.className = 'tile-btn';
+    boBtn.dataset.value = 'blackout';
+    boBtn.textContent = '⬛';
+    boBtn.title = 'Blackout: click hexes to remove them from play';
+    boBtn.addEventListener('click', () => {
+        document.querySelectorAll('.tile-btn').forEach(b => b.classList.remove('selected'));
+        boBtn.classList.add('selected');
+        selectedTile = 'blackout';
+        document.getElementById('selectedTileDisplay').textContent = 'Blackout (⬛)';
+    });
+    palette.appendChild(boBtn);
+
+    // Quick presets for the blackout set.
+    const mkPreset = (label, fn) => {
+        const b = document.createElement('button');
+        b.className = 'tile-btn';
+        b.style.fontSize = '11px';
+        b.textContent = label;
+        b.addEventListener('click', fn);
+        palette.appendChild(b);
+    };
+    mkPreset('Inner 7', () => { blackout = new Set(OUTER_RING); refreshAfterBlackoutChange(); });
+    mkPreset('Clear BO', () => { blackout.clear(); refreshAfterBlackoutChange(); });
+
     // Select tile 1 by default
     document.querySelector('.tile-btn[data-value="1"]').click();
+}
+
+// Re-render + revalidate after the blackout set changes (presets or toggles).
+function refreshAfterBlackoutChange() {
+    // A blacked-out hex can't hold a tile.
+    blackout.forEach(h => { editorBoard[h] = null; });
+    updateBoardDisplay();
+    updateBoardStats();
+    updatePositionString();
+    validatePuzzle();
 }
 
 // ============================================================================
@@ -286,9 +361,9 @@ function updateTileCounts() {
 function validatePuzzle() {
     const errors = [];
 
-    // Count filled hexes
-    const filledCount = editorBoard.filter(v => v !== null).length;
-    const emptyCount = 19 - filledCount;
+    // Required tiles are driven by the ACTIVE empty hexes (blacked-out hexes are out of play, so
+    // they don't need filling). This is the single source of truth for hand sizes under blackouts.
+    const emptyCount = activeEmptyCount();
 
     // Calculate required tiles based on who starts
     let requiredP1, requiredP2;
@@ -300,13 +375,15 @@ function validatePuzzle() {
         requiredP1 = Math.floor(emptyCount / 2);
     }
 
+    const blackoutNote = blackout.size > 0 ? `, ${blackout.size} blacked out` : '';
+
     // Validate tile counts
     if (p1Tiles.length !== requiredP1) {
-        errors.push(`❌ P1 has ${p1Tiles.length} tiles but needs ${requiredP1} (${emptyCount} empty hexes, P${startingPlayer} starts)`);
+        errors.push(`❌ P1 has ${p1Tiles.length} tiles but needs ${requiredP1} (${emptyCount} active empty hexes${blackoutNote}, P${startingPlayer} starts)`);
     }
 
     if (p2Tiles.length !== requiredP2) {
-        errors.push(`❌ P2 has ${p2Tiles.length} tiles but needs ${requiredP2} (${emptyCount} empty hexes, P${startingPlayer} starts)`);
+        errors.push(`❌ P2 has ${p2Tiles.length} tiles but needs ${requiredP2} (${emptyCount} active empty hexes${blackoutNote}, P${startingPlayer} starts)`);
     }
 
     // Display validation results
@@ -338,8 +415,8 @@ function validatePuzzle() {
 }
 
 function updateBoardStats() {
-    const filledCount = editorBoard.filter(v => v !== null).length;
-    const emptyCount = 19 - filledCount;
+    const filledCount = editorBoard.filter((v, i) => v !== null && !blackout.has(i)).length;
+    const emptyCount = activeEmptyCount();   // active (in-play) empties only
 
     document.getElementById('filledCount').textContent = filledCount;
     document.getElementById('emptyCount').textContent = emptyCount;
@@ -358,7 +435,11 @@ function updatePositionString() {
         }
     }
 
-    const posStr = `${hexPlacements.join(',')}|p1:${p1Tiles.join(',')}|p2:${p2Tiles.join(',')}|turn:${startingPlayer}`;
+    let posStr = `${hexPlacements.join(',')}|p1:${p1Tiles.join(',')}|p2:${p2Tiles.join(',')}|turn:${startingPlayer}`;
+    // Blackout is editor metadata (the solver gets it as a separate active-mask, not in the string).
+    // Append it so you can SEE which hexes are out of play; it round-trips on paste here. The solve
+    // path strips anything past turn:, so this is display/copy only and never reaches the engine.
+    if (blackout.size > 0) posStr += `|bo:${Array.from(blackout).sort((a, b) => a - b).join(',')}`;
     document.getElementById('positionString').value = posStr;
 }
 
@@ -416,6 +497,12 @@ function loadFromPositionString(posStr) {
             document.getElementById('startingPlayerSelect').value = startingPlayer;
         }
 
+        // Parse blackout (optional |bo:h,h,...). Absent -> clears the blackout. Then drop any tiles
+        // that landed on a blacked-out hex so the board stays consistent.
+        const boMatch = posStr.match(/bo:([0-9,]+)/);
+        blackout = new Set(boMatch ? boMatch[1].split(',').map(Number) : []);
+        blackout.forEach(h => { editorBoard[h] = null; });
+
         updateBoardDisplay();
         updateTileCounts();
         updateBoardStats();
@@ -457,6 +544,7 @@ function newPuzzle() {
         p1Tiles = [1,2,3,4,5,6,7,8,9];
         p2Tiles = [1,2,3,4,5,6,7,8,9];
         startingPlayer = 1;
+        blackout = new Set();
 
         document.getElementById('puzzleTitle').value = '';
         document.getElementById('puzzleDescription').value = '';
@@ -489,6 +577,7 @@ function savePuzzle() {
         p1Tiles: p1Tiles,
         p2Tiles: p2Tiles,
         startingPlayer: startingPlayer,
+        blackout: Array.from(blackout),
         createdAt: new Date().toISOString()
     };
 
@@ -515,6 +604,7 @@ function exportPuzzle() {
         p1Tiles: p1Tiles,
         p2Tiles: p2Tiles,
         startingPlayer: startingPlayer,
+        blackout: Array.from(blackout),
         exportedAt: new Date().toISOString()
     };
 
@@ -551,6 +641,7 @@ function importPuzzle() {
                 p1Tiles = puzzleData.p1Tiles || [];
                 p2Tiles = puzzleData.p2Tiles || [];
                 startingPlayer = puzzleData.startingPlayer || 1;
+                blackout = new Set(puzzleData.blackout || []);
 
                 document.getElementById('p1TilesInput').value = p1Tiles.join(',');
                 document.getElementById('p2TilesInput').value = p2Tiles.join(',');
@@ -666,6 +757,7 @@ window.loadSavedPuzzle = function(puzzleId) {
     p1Tiles = puzzle.p1Tiles || [];
     p2Tiles = puzzle.p2Tiles || [];
     startingPlayer = puzzle.startingPlayer || 1;
+    blackout = new Set(puzzle.blackout || []);
 
     document.getElementById('p1TilesInput').value = p1Tiles.join(',');
     document.getElementById('p2TilesInput').value = p2Tiles.join(',');
@@ -730,7 +822,7 @@ async function aiMakeMove() {
 
     try {
         // Count empty hexes
-        const emptyHexes = playGame.board.filter(hex => hex.value === null).length;
+        const emptyHexes = playActiveEmpties();
         const minimaxThreshold = parseInt(document.getElementById('minimaxThreshold').value) || 10;
 
         // Decide which AI to use based on threshold
@@ -791,7 +883,7 @@ async function testWithMCTS() {
         console.log(`📋 Position: ${position}`);
         console.log(`🎲 Rollout threshold: ${rolloutThreshold === 0 ? 'random only' : rolloutThreshold + ' empty hexes'}`);
 
-        wasmModule.loadPosition(position);
+        applyMaskToWasm(); wasmModule.loadPosition(position);
         const resultJson = wasmModule.mctsFindBestMove(mctsSimulations, 0, false, useMinimaxRollouts, rolloutThreshold);
         const result = JSON.parse(resultJson);
 
@@ -872,7 +964,7 @@ function toWasmShape(best) {
 async function serverSolve(position, onProgress) {
     const start = await fetch(SOLVE_SERVER + '/jobs', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ position }),
+        body: JSON.stringify({ position, activeMask: activeMaskValue() }),
     }).then(r => r.json());
 
     // Tag the result with which engine actually ran, so the readout is honest (native vs WASM).
@@ -944,7 +1036,7 @@ async function testWithMinimax() {
     }
 
     // Check if minimax is appropriate for this position
-    const emptyHexes = playGame.board.filter(hex => hex.value === null).length;
+    const emptyHexes = playActiveEmpties();
     const minimaxThreshold = parseInt(document.getElementById('minimaxThreshold').value) || 10;
 
     if (emptyHexes > minimaxThreshold) {
@@ -959,7 +1051,8 @@ async function testWithMinimax() {
 
         // Debug: Log the position string being sent
         console.log(`📋 Position string: ${position}`);
-        console.log(`📊 Empty hexes: ${emptyHexes}, P1 tiles: ${playGame.player1Tiles.length}, P2 tiles: ${playGame.player2Tiles.length}`);
+        if (blackout.size > 0) console.log(`⬛ Blacked out (out of play): ${Array.from(blackout).sort((a, b) => a - b).map(h => 'H' + (h + 1)).join(', ')}  (active mask ${activeMaskValue()})`);
+        console.log(`📊 Active empty hexes: ${emptyHexes}, P1 tiles: ${playGame.player1Tiles.length}, P2 tiles: ${playGame.player2Tiles.length}`);
 
         const depth = emptyHexes; // Search to game end (no deeper than remaining moves)
 
@@ -978,7 +1071,7 @@ async function testWithMinimax() {
             if (!result) { console.log('🛑 Solve cancelled before any depth completed — no result.'); return; }
         } else {
             console.log(`⚡ C++ WASM Minimax (server not running — solving in-browser): depth ${depth}...`);
-            wasmModule.loadPosition(position);
+            applyMaskToWasm(); wasmModule.loadPosition(position);
             result = JSON.parse(wasmModule.minimaxFindBestMove(depth, 600000));
         }
 
@@ -1002,6 +1095,12 @@ async function testWithMinimax() {
             nodesExplored: (result.totalNodes ?? result.nodes ?? result.nodesExplored) ? (result.totalNodes ?? result.nodes ?? result.nodesExplored).toLocaleString() : 'N/A'
         });
 
+        // Stale-server guard: if the solver returns a move on a blacked-out hex, the server isn't
+        // honoring the blackout (it's solving the full board) -> restart the solve server.
+        if (blackout.has(result.hexId)) {
+            console.warn(`⚠️ Solver returned blacked-out hex H${result.hexId + 1} — the solve server is NOT respecting the blackout. Restart it (node server/solve-server.cjs) and re-test.`);
+        }
+
         // Try to make the move
         const success = await executeBestMove(result.hexId, result.tileValue);
 
@@ -1013,7 +1112,7 @@ async function testWithMinimax() {
             const mctsPosition = getPlayGamePositionString();
             const mctsSimulations = parseInt(document.getElementById('mctsSimulations').value) || 20000;
 
-            wasmModule.loadPosition(mctsPosition);
+            applyMaskToWasm(); wasmModule.loadPosition(mctsPosition);
             const mctsResultJson = wasmModule.mctsFindBestMove(mctsSimulations, 0, false, false, 10);
             const mctsResult = JSON.parse(mctsResultJson);
 
@@ -1119,7 +1218,7 @@ async function startAutoPlay() {
         // Keep playing until game ends
         while (!playGame.gameEnded) {
             // Safety check: if board is full, stop
-            const emptyHexes = playGame.board.filter(hex => hex.value === null).length;
+            const emptyHexes = playActiveEmpties();
             if (emptyHexes === 0) {
                 console.log('🏁 Board is full - Auto-play complete!');
                 playGame.gameEnded = true;
@@ -1150,7 +1249,7 @@ async function autoPlayNextMove() {
     if (playGame.gameEnded) return;
 
     // Count empty hexes
-    const emptyHexes = playGame.board.filter(hex => hex.value === null).length;
+    const emptyHexes = playActiveEmpties();
     const minimaxThreshold = parseInt(document.getElementById('minimaxThreshold').value) || 10;
 
     // Decide which AI to use based on threshold
@@ -1176,7 +1275,7 @@ async function runMCTSMove() {
     console.log(`📋 Position: ${position}`);
     console.log(`🎲 Rollout threshold: ${rolloutThreshold === 0 ? 'random only' : rolloutThreshold + ' empty hexes'}`);
 
-    wasmModule.loadPosition(position);
+    applyMaskToWasm(); wasmModule.loadPosition(position);
     const resultJson = wasmModule.mctsFindBestMove(mctsSimulations, 0, false, useMinimaxRollouts, rolloutThreshold);
     const result = JSON.parse(resultJson);
 
@@ -1218,12 +1317,12 @@ async function runMinimaxMove() {
     if (!wasmModule) return;
 
     const position = getPlayGamePositionString();
-    const emptyHexes = playGame.board.filter(hex => hex.value === null).length;
+    const emptyHexes = playActiveEmpties();
     const depth = emptyHexes; // Search to game end (no deeper than remaining moves)
 
     console.log(`⚡ C++ WASM Minimax: running depth ${depth} search...`);
 
-    wasmModule.loadPosition(position);
+    applyMaskToWasm(); wasmModule.loadPosition(position);
     const resultJson = wasmModule.minimaxFindBestMove(depth, 120000);  // Dynamic depth, timeout=120000ms (2 minutes)
     const result = JSON.parse(resultJson);
 
@@ -1336,6 +1435,14 @@ let playGame = null;
 let selectedPlayTile = null;
 let moveHistory = [];  // Track moves for undo
 
+// Empty hexes that are actually IN PLAY (blacked-out hexes are empty but not playable). Drives the
+// minimax depth + the MCTS/minimax threshold so they match the active board, not the full 19.
+function playActiveEmpties() {
+    if (!playGame) return 0;
+    const mask = (playGame.activeMask ?? ((1 << 19) - 1));
+    return playGame.board.filter((hex, i) => hex.value === null && ((mask >> i) & 1)).length;
+}
+
 function setupPlayMode() {
     document.getElementById('startPlayBtn').addEventListener('click', startPlaying);
     document.getElementById('resetPlayBtn').addEventListener('click', resetPlay);
@@ -1369,6 +1476,7 @@ function startPlaying() {
     playGame.player1Tiles = [...p1Tiles];
     playGame.player2Tiles = [...p2Tiles];
     playGame.currentPlayer = startingPlayer;
+    playGame.activeMask = activeMaskValue();  // blackout: gate legal moves to in-play hexes
 
     // Anti-symmetry gate: recompute now that the puzzle's tiles are loaded
     // (the constructor set this from random tiles, so it must be refreshed).
@@ -1418,6 +1526,7 @@ function resetPlay() {
     playGame.player1Tiles = [...p1Tiles];
     playGame.player2Tiles = [...p2Tiles];
     playGame.currentPlayer = startingPlayer;
+    playGame.activeMask = activeMaskValue();  // blackout: gate legal moves to in-play hexes
 
     // Anti-symmetry gate: recompute now that the puzzle's tiles are loaded
     playGame.tilesAreIdentical = playGame.tilesMatch(playGame.player1Tiles, playGame.player2Tiles);
@@ -1552,8 +1661,8 @@ function drawPlayBoard() {
         valueText.textContent = '';
         g.appendChild(valueText);
 
-        // Click handler for empty hexes
-        if (playGame.board[hexIndex].value === null) {
+        // Click handler for empty, in-play hexes (blacked-out hexes are not playable)
+        if (playGame.board[hexIndex].value === null && !blackout.has(hexIndex)) {
             g.style.cursor = 'pointer';
             g.addEventListener('click', () => onPlayHexClick(pos.id));
         }
@@ -1628,7 +1737,12 @@ function updatePlayBoard() {
         const polygon = g.querySelector('polygon');
         const valueText = g.querySelector('.play-hex-text');
 
-        if (hex.value !== null) {
+        if (blackout.has(index)) {
+            // Blacked-out hex (out of play)
+            polygon.setAttribute('fill', '#111');
+            polygon.setAttribute('opacity', '0.85');
+            valueText.textContent = '';
+        } else if (hex.value !== null) {
             // Color based on player ownership
             if (hex.owner === 'player1') {
                 polygon.setAttribute('fill', '#e74c3c');  // Red for Player 1

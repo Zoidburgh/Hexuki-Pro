@@ -112,17 +112,37 @@ function emptiesOf(position) {
     return 19 - placed;
 }
 
-function startJob(position) {
+// Blackout support: an active mask (bit h = hex h in play). Default = full board (all 19).
+const FULL_MASK = (1 << 19) - 1;
+// Empties among IN-PLAY hexes only -> the depth the solver actually searches (so `complete` is right).
+function activeEmptiesOf(position, mask) {
+    if (mask === FULL_MASK) return emptiesOf(position);
+    const board = (position.split('|')[0] || '');
+    const placed = new Set();
+    if (board) for (const t of board.split(',').filter(Boolean)) placed.add(parseInt(t.slice(1), 10));
+    let n = 0;
+    for (let h = 0; h < 19; h++) if (((mask >> h) & 1) && !placed.has(h)) n++;
+    return n;
+}
+// Cache key folds in the mask so a blacked-out solve never collides with the full-board one.
+function cacheKeyFor(position, mask) {
+    return (mask === FULL_MASK) ? position : `${position}|am:${mask >>> 0}`;
+}
+
+function startJob(position, mask = FULL_MASK) {
     const id = `job${++jobCounter}`;
-    const empties = emptiesOf(position);
-    const job = { id, position, empties, status: 'running', best: null, error: null,
+    const empties = activeEmptiesOf(position, mask);
+    const cacheKey = cacheKeyFor(position, mask);
+    const job = { id, position, mask, cacheKey, empties, status: 'running', best: null, error: null,
                   worker: null, proc: null, kind: null, startedAt: Date.now() };
 
     if (HAS_NATIVE) {
         // Native multi-core solve: spawn the exe (uses all hardware threads, Lazy SMP), stream
         // @PROGRESS, cancel = kill the process. Same anytime-search contract as the WASM worker.
         job.kind = 'native';
-        const child = spawn(NATIVE_EXE, [position, '0', '2147483647', '--threads', String(SOLVE_THREADS), '--stream']);
+        const args = [position, '0', '2147483647', '--threads', String(SOLVE_THREADS), '--stream'];
+        if (mask !== FULL_MASK) args.push('--active-mask', String(mask >>> 0));  // blackout
+        const child = spawn(NATIVE_EXE, args);
         job.proc = child;
         let buf = '';
         child.stdout.on('data', d => {
@@ -148,7 +168,7 @@ function startJob(position) {
                             nodes: r.nodes, timeMs: r.timeMs, totalNodes: r.nodes, totalMs: r.timeMs,
                         };
                         job.status = 'done';
-                        if (job.best.complete) cachePut(position, job.best);
+                        if (job.best.complete) cachePut(job.cacheKey, job.best);
                         console.log(`job ${id} (native) done: score ${job.best.score} depth ${job.best.depth}`);
                     } catch {}
                 }
@@ -162,14 +182,14 @@ function startJob(position) {
 
     // Fallback: WASM worker thread (no native exe present).
     job.kind = 'wasm';
-    const worker = new Worker(path.join(__dirname, 'solve-worker.cjs'), { workerData: { position } });
+    const worker = new Worker(path.join(__dirname, 'solve-worker.cjs'), { workerData: { position, activeMask: mask } });
     job.worker = worker;
     worker.on('message', msg => {
         if (msg.progress) job.best = msg.progress;
         else if (msg.done) {
             job.best = msg.done || job.best;
             job.status = 'done';
-            if (job.best && job.best.complete) cachePut(position, job.best); // cache full solves only
+            if (job.best && job.best.complete) cachePut(job.cacheKey, job.best); // cache full solves only
             console.log(`job ${id} (wasm) done: score ${job.best && job.best.score} depth ${job.best && job.best.depth}`);
         } else if (msg.error) { job.status = 'error'; job.error = msg.error; }
     });
@@ -222,12 +242,17 @@ const server = http.createServer((req, res) => {
         let body = '';
         req.on('data', c => { body += c; if (body.length > 1e6) req.destroy(); });
         req.on('end', () => {
-            let position;
-            try { position = normalizePosition(JSON.parse(body || '{}').position); }
+            let position, mask;
+            try {
+                const reqObj = JSON.parse(body || '{}');
+                position = normalizePosition(reqObj.position);
+                mask = (reqObj.activeMask != null) ? (reqObj.activeMask >>> 0) : FULL_MASK;
+            }
             catch (e) { return send(res, 400, { error: 'bad JSON: ' + e.message }); }
             if (!position || !position.includes('|')) return send(res, 400, { error: 'missing/invalid position' });
-            if (cache.has(position)) return send(res, 200, { status: 'done', best: cache.get(position), cached: true, position, solver: HAS_NATIVE ? 'native (multi-core)' : 'wasm worker' });
-            const job = startJob(position);
+            const key = cacheKeyFor(position, mask);
+            if (cache.has(key)) return send(res, 200, { status: 'done', best: cache.get(key), cached: true, position, solver: HAS_NATIVE ? 'native (multi-core)' : 'wasm worker' });
+            const job = startJob(position, mask);
             return send(res, 202, { jobId: job.id, status: job.status, position });
         });
         return;

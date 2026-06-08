@@ -11,7 +11,9 @@ const { parentPort, workerData } = require('worker_threads');
 const path = require('path');
 
 (async () => {
-    const { position } = workerData;
+    const { position, activeMask } = workerData;
+    const FULL_MASK = (1 << 19) - 1;
+    const mask = (activeMask != null) ? (activeMask >>> 0) : FULL_MASK;
     let empties = 0;
     let last = null;
 
@@ -34,9 +36,10 @@ const path = require('path');
     const Factory = require(path.join(__dirname, '..', 'bench', 'engine', 'hexuki.js'));
     const m = await Factory({ print: onLine });     // route engine stdout (@PROGRESS) to onLine
     m.initialize();
+    if (mask !== FULL_MASK && typeof m.setActiveHexes === 'function') m.setActiveHexes(mask);  // blackout
 
     m.loadPosition(position);
-    for (let h = 0; h < 19; h++) if (m.getTileValue(h) === 0) empties++;
+    for (let h = 0; h < 19; h++) if (((mask >> h) & 1) && m.getTileValue(h) === 0) empties++;  // active empties
 
     // Single streaming search to game end, no practical cap (0x7fffffff ms). @PROGRESS lines
     // fire synchronously per depth during this call -> real-time progress out to the server.
