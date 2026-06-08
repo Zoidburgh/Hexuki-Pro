@@ -65,6 +65,22 @@ static long long g_cutTotal = 0, g_cutFirst = 0;
 // ASPIRATION-BUG HUNT (single-thread debug): verify every value-TT RETURN against brute force.
 static bool g_verifyReturns = false;
 
+// ---- Flow/bottleneck profiler (single-thread, env HEXUKI_PROFILE=1) -------------------------------
+// Buckets cycles into the real per-node phases (sampled 1/64 nodes so overhead is negligible) and
+// counts the key operations. rdtsc on x86; a no-op elsewhere (WASM) where it's never enabled anyway.
+#if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
+#include <x86intrin.h>
+static inline unsigned long long rdtsc_() { return __rdtsc(); }
+#else
+static inline unsigned long long rdtsc_() { return 0; }
+#endif
+static bool g_profile = false;
+static thread_local unsigned g_profCtr = 0;
+enum { PH_PROBE, PH_MOVEGEN, PH_ORDER, PH_STORE, PH_EVAL, PH_COUNT };
+static unsigned long long g_phCyc[PH_COUNT] = {};
+static long long g_cLeaves = 0, g_cTTcut = 0, g_cMovegen = 0, g_cStore = 0, g_cMoves = 0,
+                 g_cResearch = 0, g_cSampled = 0;
+
 // Brute-force negamax to `depth` (game end when depth >= empties). NO TT, NO alpha-beta -> the
 // undisputed true (depth-limited) value. Own board copy + allocating getValidMoves -> reentrant.
 static int verifyTrueValue(HexukiBitboard board, int depth) {
@@ -288,6 +304,8 @@ int alphaBeta(
     int ply
 ) {
     nodesSearched++;
+    const bool prof = g_profile && ((++g_profCtr & 63u) == 0);   // sample this node's phase timings?
+    if (prof) g_cSampled++;
 
     // Check timeout periodically
     if (nodesSearched % TIMEOUT_CHECK_INTERVAL == 0) {
@@ -300,6 +318,8 @@ int alphaBeta(
 
     // Terminal node: game over or depth reached
     if (depth == 0 || board.isGameOver()) {
+        if (g_profile) g_cLeaves++;
+        if (prof) { auto t = rdtsc_(); int e = evaluate(board); g_phCyc[PH_EVAL] += rdtsc_() - t; return e; }
         return evaluate(board);
     }
 
@@ -325,7 +345,10 @@ int alphaBeta(
     TTEntry ttEntry;
     bool ttHit = false;  // an entry exists at all -> its bestMove is safe for ordering
 
-    if (tt.probe(hash, ttEntry)) {
+    unsigned long long _tp = prof ? rdtsc_() : 0;
+    const bool _probed = tt.probe(hash, ttEntry);
+    if (prof) g_phCyc[PH_PROBE] += rdtsc_() - _tp;
+    if (_probed) {
         ttHit = true;
         // Default (g_useValueTT == false): TT is MOVE ORDERING ONLY (ttEntry.bestMove via
         // orderMoves below). Correct by construction -- ordering can't change the value.
@@ -357,10 +380,13 @@ int alphaBeta(
                 }
             }
             if (ttEntry.flag == TTEntry::EXACT) {
+                if (g_profile) g_cTTcut++;
                 return ttEntry.score;
             } else if (ttEntry.flag == TTEntry::LOWER_BOUND && ttEntry.score >= beta) {
+                if (g_profile) g_cTTcut++;
                 return ttEntry.score;
             } else if (ttEntry.flag == TTEntry::UPPER_BOUND && ttEntry.score <= alpha) {
+                if (g_profile) g_cTTcut++;
                 return ttEntry.score;
             }
         }
@@ -371,16 +397,22 @@ int alphaBeta(
     // local fallback never triggers in practice but keeps us safe if it ever did).
     std::vector<Move> moveFallback;
     std::vector<Move>& moves = (ply < MOVE_STACK_SIZE) ? s_moveStack[ply] : moveFallback;
+    unsigned long long _tg = prof ? rdtsc_() : 0;
     board.getValidMovesInto(moves);
+    if (prof) g_phCyc[PH_MOVEGEN] += rdtsc_() - _tg;
+    if (g_profile) g_cMovegen++;
 
     if (moves.empty()) {
         // No moves available - game over
+        if (g_profile) g_cLeaves++;
         return evaluate(board);
     }
 
     // Order moves: try the TT's remembered best move first whenever any entry exists.
     // Safe now that the entry flag is computed against alphaOrig (below).
+    unsigned long long _to = prof ? rdtsc_() : 0;
     orderMoves(moves, board, ttHit ? &ttEntry : nullptr, killers, history, ply);
+    if (prof) g_phCyc[PH_ORDER] += rdtsc_() - _to;
 
     int bestScore = -INF;
     Move bestMove = moves[0];
@@ -394,6 +426,10 @@ int alphaBeta(
     int moveIdx = 0;
     for (const auto& move : moves) {
         board.makeMove(move);
+#ifndef HEXUKI_NO_PREFETCH
+        tt.prefetch(board.getHash());   // start the child's TT-slot DRAM fetch before recursing
+#endif
+        if (g_profile) g_cMoves++;
         int score;
 #ifdef HEXUKI_NO_PVS
         score = -alphaBeta(board, depth - 1, -beta, -alpha, tt, nodesSearched, startTime, timeLimitMs,
@@ -408,6 +444,7 @@ int alphaBeta(
                                killers, history, ply + 1);
             // The scout said "maybe better than alpha" but not a proven cutoff -> re-search exactly.
             if (score > alpha && score < beta) {
+                if (g_profile) g_cResearch++;
                 score = -alphaBeta(board, depth - 1, -beta, -alpha, tt, nodesSearched, startTime, timeLimitMs,
                                    killers, history, ply + 1);
             }
@@ -458,7 +495,10 @@ int alphaBeta(
     }
 
     // Store in transposition table
+    unsigned long long _ts = prof ? rdtsc_() : 0;
     tt.store(hash, TTEntry(bestScore, depth, flag, bestMove));
+    if (prof) g_phCyc[PH_STORE] += rdtsc_() - _ts;
+    if (g_profile) g_cStore++;
 
     return bestScore;
 }
@@ -728,6 +768,11 @@ SearchResult findBestMove(HexukiBitboard& board, const SearchConfig& config) {
     g_verifyExact = config.verifyExact; g_firstBadLogged = false;
     g_verifyReturns = config.verifyReturns;
     g_orderStats = config.orderStats; if (g_orderStats) { g_cutTotal = 0; g_cutFirst = 0; }
+    g_profile = (std::getenv("HEXUKI_PROFILE") != nullptr);
+    if (g_profile) {
+        for (int i = 0; i < PH_COUNT; i++) g_phCyc[i] = 0;
+        g_cLeaves = g_cTTcut = g_cMovegen = g_cStore = g_cMoves = g_cResearch = g_cSampled = 0;
+    }
 
     auto startTime = std::chrono::steady_clock::now();
 
@@ -911,6 +956,23 @@ SearchResult findBestMove(HexukiBitboard& board, const SearchConfig& config) {
     result.score = bestScore;
     result.ttHits = tt.getHits();
     result.ttMisses = tt.getMisses();
+
+    if (g_profile) {
+        unsigned long long tot = 0; for (int i = 0; i < PH_COUNT; i++) tot += g_phCyc[i];
+        if (tot == 0) tot = 1;
+        const char* nm[PH_COUNT] = { "TT-probe", "move-gen", "ordering", "TT-store", "leaf-eval" };
+        const long long N = result.nodesSearched;
+        std::cerr << "\n@PROFILE  nodes=" << N << "  sampled=" << g_cSampled
+                  << "  TThit%=" << (result.ttHits + result.ttMisses ? (100.0 * result.ttHits / (result.ttHits + result.ttMisses)) : 0)
+                  << "\n  phase cycles (sampled 1/64, of measured total):\n";
+        for (int i = 0; i < PH_COUNT; i++)
+            std::cerr << "    " << nm[i] << "  " << (100.0 * g_phCyc[i] / tot) << "%\n";
+        std::cerr << "  (the REST = make/unmake + recursion overhead is whatever's not above)\n"
+                  << "  counts: leaves=" << g_cLeaves << "  interior=" << (N - g_cLeaves)
+                  << "  value-TT cutoffs=" << g_cTTcut << " (" << (100.0 * g_cTTcut / (N ? N : 1)) << "% of nodes)"
+                  << "  moves searched=" << g_cMoves << "  PVS re-searches=" << g_cResearch
+                  << " (" << (g_cMoves ? 100.0 * g_cResearch / g_cMoves : 0) << "% of moves)\n";
+    }
 
     return result;
 }

@@ -63,6 +63,11 @@ public:
     bool probe(uint64_t hash, TTEntry& entry) const;
     void clear();
 
+    // Start the DRAM fetch for this hash's slot early (a pure hint -- cannot change behavior). Call
+    // it right after makeMove so the cache miss overlaps the child's setup instead of stalling its
+    // probe. No-op where the target has no prefetch instruction (e.g. WASM).
+    void prefetch(uint64_t hash) const { __builtin_prefetch(&table[hash & mask], 0, 1); }
+
     size_t getSize() const { return table.size(); }
     size_t getHits() const { return hits.load(std::memory_order_relaxed); }
     size_t getMisses() const { return misses.load(std::memory_order_relaxed); }
