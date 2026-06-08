@@ -28,19 +28,31 @@ int main(int argc, char** argv) {
     bool stream = false;
     int depthArg = -1;
     int threadsArg = -1;
+    int hexesArg = 19;       // board size preset: 19 (full) or 7 (beginner inner hexagon)
+    long long maskArg = -1;  // --active-mask <int>: arbitrary 19-bit blackout (overrides --hexes)
     long long timeoutMs = 2147483647LL; // ~no cap
     for (int i = 2; i < argc; i++) {
         if (std::strcmp(argv[i], "--stream") == 0) stream = true;
         else if (std::strcmp(argv[i], "--threads") == 0 && i + 1 < argc) threadsArg = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--hexes") == 0 && i + 1 < argc) hexesArg = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--active-mask") == 0 && i + 1 < argc) maskArg = std::atoll(argv[++i]);
         else if (depthArg < 0) depthArg = std::atoi(argv[i]);
         else timeoutMs = std::atoll(argv[i]);
     }
 
+    // Blackout: restrict play to a subset of hexes (the rest stay empty -> drop out of scoring on their
+    // own). --active-mask is the general form (any subset); --hexes 7 is the inner-hexagon preset. Must
+    // be set before counting empties / solving. Full board otherwise.
+    if (maskArg >= 0) setActiveHexMask((uint32_t)maskArg);
+    else setActiveHexMask(hexesArg == 7 ? INNER7_MASK : FULL_HEX_MASK);
+    const uint32_t active = getActiveHexMask();
+
     HexukiBitboard board;
     board.loadPosition(position);
 
+    // Count empties among IN-PLAY hexes only -> the default depth solves to the (inner) game end.
     int empties = 0;
-    for (int h = 0; h < NUM_HEXES; h++) if (!board.isHexOccupied(h)) empties++;
+    for (int h = 0; h < NUM_HEXES; h++) if (((active >> h) & 1u) && !board.isHexOccupied(h)) empties++;
     const int depth = (depthArg > 0) ? depthArg : empties;
 
     minimax::SearchConfig config;

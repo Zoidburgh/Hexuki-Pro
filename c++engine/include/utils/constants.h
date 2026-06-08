@@ -238,6 +238,16 @@ struct ChainStarter {
     Direction dir;
 };
 
+// ============================================================================
+// ACTIVE-HEX MASKS (board size variants)
+// ============================================================================
+// Full board = all 19 hexes. Beginner "inner 7" = the center hexagon (the board with its outer
+// layer removed): center 9 + its six neighbours {4,6,7,11,12,14}. Vertically symmetric (axis 4/9/14,
+// mirror pairs 6<->7, 11<->12), so the anti-symmetry rule still applies. Restricting moves to a mask
+// keeps inactive hexes empty, so they drop out of chain scoring on their own -- no scoring changes.
+constexpr uint32_t FULL_HEX_MASK = (1u << NUM_HEXES) - 1u;
+constexpr uint32_t INNER7_MASK = (1u << 4) | (1u << 6) | (1u << 7) | (1u << 9) | (1u << 11) | (1u << 12) | (1u << 14);
+
 constexpr ChainStarter CHAIN_STARTERS[15] = {
     {0,  {1, -1}},  // DOWNLEFT
     {0,  {2,  0}},  // DOWN

@@ -30,6 +30,13 @@ static bool tilesMatch(std::vector<int> tiles1, std::vector<int> tiles2) {
 static uint32_t g_legalHexMask[1u << NUM_HEXES];
 static bool g_legalTableBuilt = false;
 
+// Active-hex mask: which hexes are "in play". Default = all 19 (full board, behaviour byte-identical).
+// Beginner mode sets it to INNER7_MASK. The ONLY effect is gating move generation; everything else
+// (scoring, adjacency, chain rules, terminal) follows because inactive hexes simply stay empty.
+static uint32_t g_activeMask = FULL_HEX_MASK;
+void setActiveHexMask(uint32_t mask) { mask &= FULL_HEX_MASK; g_activeMask = mask ? mask : FULL_HEX_MASK; }
+uint32_t getActiveHexMask() { return g_activeMask; }
+
 // ============================================================================
 // Constructor & Reset
 // ============================================================================
@@ -75,13 +82,10 @@ void HexukiBitboard::reset() {
 // isHexOccupied() and getTileValue() are now inlined in bitboard.h for performance
 
 bool HexukiBitboard::isGameOver() const {
-    // Game ends when all 19 hexes are filled
-    // Can't use moveCount >= 18 because puzzles might have empty center hex (allowing 19 moves)
-    int occupiedCount = 0;
-    for (int i = 0; i < NUM_HEXES; i++) {
-        if (isHexOccupied(i)) occupiedCount++;
-    }
-    return occupiedCount >= NUM_HEXES;
+    // Game ends when every IN-PLAY hex is filled. With the full mask this is "all 19 filled" (the
+    // original rule); in beginner mode it ends when the inner 7 are full (the outer ring stays empty
+    // by design, so it must not be required to fill). Pure occupancy test against the active mask.
+    return (hexOccupied & g_activeMask) == g_activeMask;
 }
 
 bool HexukiBitboard::isTileAvailable(int player, int tileValue) const {
@@ -538,7 +542,7 @@ void HexukiBitboard::getValidMovesInto(std::vector<Move>& moves) const {
 
     // Legal hex LOCATIONS come from the precomputed table -- one lookup replaces
     // the per-hex adjacency + chain walk. The bit is set only for empty, legal hexes.
-    const uint32_t legal = g_legalHexMask[hexOccupied];
+    const uint32_t legal = g_legalHexMask[hexOccupied] & g_activeMask;  // gate to in-play hexes (beginner mode)
 
     for (int hexId = 0; hexId < NUM_HEXES; hexId++) {
         if (!(legal & (1u << hexId))) continue;   // table: not a legal location

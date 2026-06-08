@@ -151,6 +151,12 @@ private:
     int findHexAt(int row, int col) const;
 };
 
+// Active-hex mask control (board-size variant). Default is the full 19-hex board. Set INNER7_MASK
+// for beginner mode. Global engine state -- set it before generating moves / solving. Passing 0
+// resets to the full board.
+void setActiveHexMask(uint32_t mask);
+uint32_t getActiveHexMask();
+
 } // namespace hexuki
 
 #endif // HEXUKI_BITBOARD_H

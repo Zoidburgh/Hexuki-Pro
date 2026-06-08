@@ -90,6 +90,25 @@ extern "C" bool wasmIsGameOver() {
     return g_board ? g_board->isGameOver() : false;
 }
 
+// Board-size mode: 7 = beginner inner hexagon, anything else = full 19-hex board. Global engine
+// state -- set before generating moves / solving. The full board is byte-identical to before.
+EMSCRIPTEN_KEEPALIVE
+extern "C" void wasmSetBoardMode(int hexes) {
+    setActiveHexMask(hexes == 7 ? INNER7_MASK : FULL_HEX_MASK);
+}
+
+EMSCRIPTEN_KEEPALIVE
+extern "C" int wasmGetActiveHexMask() {
+    return (int)getActiveHexMask();
+}
+
+// Arbitrary blackout: set the raw 19-bit active mask directly (bit h set = hex h is in play). This is
+// the general form -- the editor can black out ANY subset of hexes. 0 resets to the full board.
+EMSCRIPTEN_KEEPALIVE
+extern "C" void wasmSetActiveHexes(int mask) {
+    setActiveHexMask((uint32_t)mask);
+}
+
 EMSCRIPTEN_KEEPALIVE
 extern "C" int wasmGetTileValue(int hexId) {
     return g_board ? g_board->getTileValue(hexId) : 0;
@@ -376,6 +395,9 @@ EMSCRIPTEN_BINDINGS(hexuki_module) {
     function("getScoreP1", &wasmGetScoreP1);
     function("getScoreP2", &wasmGetScoreP2);
     function("isGameOver", &wasmIsGameOver);
+    function("setBoardMode", &wasmSetBoardMode);
+    function("getActiveHexMask", &wasmGetActiveHexMask);
+    function("setActiveHexes", &wasmSetActiveHexes);
     function("getTileValue", &wasmGetTileValue);
     function("makeMove", &wasmMakeMove);
     function("unmakeMove", &wasmUnmakeMove);

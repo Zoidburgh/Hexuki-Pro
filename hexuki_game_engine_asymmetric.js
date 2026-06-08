@@ -83,6 +83,10 @@ class HexukiGameEngineAsymmetric {
         this.gameEnded = false;
         this.moveCount = 0;
 
+        // Active-hex mask (board-size variant). Default = all 19. Beginner mode restricts play to the
+        // inner-7 hexagon; gating move legality keeps the outer ring empty (mirrors the C++ engine).
+        this.activeMask = (1 << 19) - 1;
+
         // Anti-symmetry tracking: once symmetry is broken, no need to check again
         this.symmetryStillPossible = true;
 
@@ -380,6 +384,11 @@ class HexukiGameEngineAsymmetric {
             return false;
         }
 
+        // Active-hex gate (beginner mode): hexes outside the in-play mask are never legal.
+        if (((this.activeMask >> hexId) & 1) === 0) {
+            return false;
+        }
+
         // Check if hex is empty
         if (hex.value !== null) {
             return false;
@@ -610,6 +619,14 @@ class HexukiGameEngineAsymmetric {
         }
 
         return moves;
+    }
+
+    /**
+     * Board-size mode: 7 = beginner inner hexagon, else full 19-hex board. Mirrors C++ setActiveHexMask.
+     */
+    setBoardMode(hexes) {
+        const INNER7 = (1 << 4) | (1 << 6) | (1 << 7) | (1 << 9) | (1 << 11) | (1 << 12) | (1 << 14);
+        this.activeMask = hexes === 7 ? INNER7 : ((1 << 19) - 1);
     }
 
     /**
