@@ -823,7 +823,7 @@ async function aiMakeMove() {
     try {
         // Count empty hexes
         const emptyHexes = playActiveEmpties();
-        const minimaxThreshold = parseInt(document.getElementById('minimaxThreshold').value) || 10;
+        const minimaxThreshold = parseInt(document.getElementById('minimaxThreshold').value) || 13;
 
         // Decide which AI to use based on threshold
         if (emptyHexes <= minimaxThreshold) {
@@ -1037,7 +1037,7 @@ async function testWithMinimax() {
 
     // Check if minimax is appropriate for this position
     const emptyHexes = playActiveEmpties();
-    const minimaxThreshold = parseInt(document.getElementById('minimaxThreshold').value) || 10;
+    const minimaxThreshold = parseInt(document.getElementById('minimaxThreshold').value) || 13;
 
     if (emptyHexes > minimaxThreshold) {
         const proceed = confirm(`⚠️ Warning: ${emptyHexes} empty hexes exceeds minimax threshold (${minimaxThreshold}).\n\nMinimax may be slow or fail. Use MCTS instead?\n\nClick OK to run Minimax anyway, Cancel to stop.`);
@@ -1250,7 +1250,7 @@ async function autoPlayNextMove() {
 
     // Count empty hexes
     const emptyHexes = playActiveEmpties();
-    const minimaxThreshold = parseInt(document.getElementById('minimaxThreshold').value) || 10;
+    const minimaxThreshold = parseInt(document.getElementById('minimaxThreshold').value) || 13;
 
     // Decide which AI to use based on threshold
     if (emptyHexes <= minimaxThreshold) {
@@ -1320,11 +1320,19 @@ async function runMinimaxMove() {
     const emptyHexes = playActiveEmpties();
     const depth = emptyHexes; // Search to game end (no deeper than remaining moves)
 
-    console.log(`⚡ C++ WASM Minimax: running depth ${depth} search...`);
-
-    applyMaskToWasm(); wasmModule.loadPosition(position);
-    const resultJson = wasmModule.minimaxFindBestMove(depth, 120000);  // Dynamic depth, timeout=120000ms (2 minutes)
-    const result = JSON.parse(resultJson);
+    // Use the SAME engine as "Test with Minimax": prefer the native multi-core server so auto-play
+    // matches the test move-for-move (the server's cache also makes repeated positions deterministic).
+    // Fall back to the in-browser WASM engine, unchanged, only if the server is down.
+    let result;
+    if (await serverAvailable()) {
+        console.log(`⚡ Auto-play minimax on local server (depth ${depth})...`);
+        result = await serverSolve(position, (d, sc) => console.log(`   …reached depth ${d} (score ${sc})`));
+        if (!result) { console.log('🛑 Auto-play solve cancelled — no move.'); return; }
+    } else {
+        console.log(`⚡ Auto-play C++ WASM Minimax (server down): depth ${depth}...`);
+        applyMaskToWasm(); wasmModule.loadPosition(position);
+        result = JSON.parse(wasmModule.minimaxFindBestMove(depth, 120000));
+    }
 
     // Check for minimax failure
     if (result.score === -1000000 || result.score === 1000000 || result.depth === 0) {
