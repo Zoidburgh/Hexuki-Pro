@@ -408,6 +408,11 @@ class HexukiGameEngineAsymmetric {
             return false;
         }
 
+        // Last move: the one remaining in-play hex is always legal (chain-length is waived).
+        if (this.isLastMove()) {
+            return true;
+        }
+
         // Check if adjacent to an occupied hex
         const adjacentHexes = this.getAdjacentHexes(hexId);
         const hasAdjacentOccupied = adjacentHexes.some(id =>
@@ -616,7 +621,16 @@ class HexukiGameEngineAsymmetric {
     // A move is forbidden iff it makes the board a perfect VERTICAL mirror AND leaves both players
     // with equal tiles afterward. Both are properties of the RESULTING state (no game history), so
     // this matches the solver on any loaded position.
+    // One in-play hex left -> the placing player has no choice of WHERE, so chain-length and
+    // anti-symmetry are waived (the final tile is a forced move). Mirrors the C++ engine.
+    isLastMove() {
+        let c = 0;
+        for (let h = 0; h < 19; h++) if (((this.activeMask >> h) & 1) && this.board[h].value === null) c++;
+        return c === 1;
+    }
+
     createsForbiddenSymmetry(hexId, tileValue) {
+        if (this.isLastMove()) return false;   // last move waives symmetry
         if (tileValue !== this.equalizingValue(this.currentPlayer)) return false;
         return this.wouldBeMirrored(hexId, tileValue);
     }
@@ -627,6 +641,16 @@ class HexukiGameEngineAsymmetric {
     getAllValidMoves() {
         const moves = [];
         const availableTiles = this.currentPlayer === 1 ? this.player1Tiles : this.player2Tiles;
+
+        // LAST MOVE: one in-play hex left -> forced placement on that square, chain-length + symmetry
+        // waived. (Mirrors the C++ getValidMovesInto fast path.)
+        if (this.isLastMove()) {
+            let H = -1;
+            for (let h = 0; h < 19; h++) if (((this.activeMask >> h) & 1) && this.board[h].value === null) { H = h; break; }
+            const seen = new Set();
+            for (const tv of availableTiles) if (!seen.has(tv)) { seen.add(tv); moves.push({ hexId: H, tileValue: tv }); }
+            return moves;
+        }
 
         // Anti-symmetry (vertical only): forbidden iff a move makes the board a perfect vertical
         // mirror AND equalizes the hands afterward. That can hold for at most ONE tile value -- the

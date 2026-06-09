@@ -542,6 +542,17 @@ void HexukiBitboard::getValidMovesInto(std::vector<Move>& moves) const {
         if (!seen && uniqueCount < 16) uniqueTileValues[uniqueCount++] = tile;
     }
 
+    // LAST MOVE: when only one in-play hex is empty, the placing player has no choice of WHERE, so the
+    // chain-length and anti-symmetry rules are waived -- you simply place your remaining tile(s) on the
+    // forced square. This is also a free speedup: it skips equalizingValue + the mirror test + the
+    // legal-table scan at every 1-empty node (the most numerous, near-leaf level of the tree).
+    const uint32_t emptyActive = g_activeMask & ~hexOccupied;
+    if (emptyActive && (emptyActive & (emptyActive - 1)) == 0) {   // exactly one in-play empty hex
+        const int lastHex = __builtin_ctz(emptyActive);
+        for (int u = 0; u < uniqueCount; u++) moves.push_back(Move(lastHex, uniqueTileValues[u]));
+        return;
+    }
+
     // Anti-symmetry (VERTICAL axis only -- it swaps P1's \ and P2's / scoring chains, so a vertical
     // mirror is the degenerate equal-score state the rule prevents). A move is illegal iff it makes
     // the board a perfect vertical mirror AND leaves both hands equal AFTERWARD. "Equal afterward"
