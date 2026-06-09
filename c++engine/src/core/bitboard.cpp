@@ -636,6 +636,7 @@ void HexukiBitboard::unmakeMove(const Move& move) {
 
 int HexukiBitboard::calculateChainScore(const int* chain, int chainLength) const {
     int product = 1;
+    bool any = false;
 
     for (int i = 0; i < chainLength; i++) {
         int hexId = chain[i];
@@ -643,10 +644,17 @@ int HexukiBitboard::calculateChainScore(const int* chain, int chainLength) const
 
         if (isHexOccupied(hexId)) {
             product *= hexValues[hexId];
+            any = true;
         }
     }
 
-    return product;
+    // A chain with NO tiles scores 0, not the multiplicative identity 1. In the full game every chain
+    // is filled at game end so this never mattered; with blackout, a dead (all-empty) chain would
+    // otherwise add a spurious +1 -- and since P1/P2 chains differ, those +1s need not cancel, so it
+    // distorted the real margin, not just the display. Full-board terminals are unaffected (any==true),
+    // so full-game RESULTS are unchanged; only positions whose tree contains a "stuck player" terminal
+    // (no legal move before the board fills) reshape slightly, since those non-full evals are now correct.
+    return any ? product : 0;
 }
 
 int HexukiBitboard::calculatePlayerScore(int player) const {

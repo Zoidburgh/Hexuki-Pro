@@ -507,15 +507,18 @@ class HexukiGameEngineAsymmetric {
 
         for (let chain of chains) {
             let chainProduct = 1;
+            let any = false;
 
             for (let hexId of chain) {
                 const hex = this.board[hexId];
                 if (hex.value !== null) {
                     chainProduct *= hex.value;
+                    any = true;
                 }
             }
 
-            totalScore += chainProduct;
+            // A chain with no tiles scores 0, not 1 (mirrors the C++ fix; matters under blackout).
+            totalScore += any ? chainProduct : 0;
         }
 
         return totalScore;
